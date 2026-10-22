@@ -1,0 +1,12 @@
+.env
+.env.*
+!.env.example
+*.exe
+*.test
+*.out
+/backend/bin/
+npm-debug.log*
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
