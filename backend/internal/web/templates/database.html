@@ -1,0 +1,128 @@
+{{define "content"}}
+<section class="page-header">
+    <div>
+        <div class="breadcrumb">
+            <a href="/">Daftar Database</a> &rsaquo; <span id="db-header-id">{{.DatabaseID}}</span>
+        </div>
+        <h1 id="db-header-title">Database: {{.DatabaseID}}</h1>
+        <p id="db-header-meta" class="muted">Memeriksa status koneksi dan hak akses...</p>
+    </div>
+    <div class="header-actions">
+        <span id="db-access-badge" class="badge badge-neutral">Memuat akses...</span>
+        <span id="db-conn-badge" class="badge badge-neutral">Memeriksa koneksi...</span>
+        <button type="button" id="reload-schema-btn" class="btn btn-outline">Muat Ulang Schema</button>
+    </div>
+</section>
+
+<section class="explorer-layout">
+    <aside class="card explorer-sidebar">
+        <div class="sidebar-header">
+            <h2>Schema &amp; Tabel</h2>
+            <input id="schema-filter-input" type="search" placeholder="Cari schema / tabel...">
+        </div>
+        <div id="schema-tree" class="schema-tree">
+            <p class="muted">Memuat struktur schema...</p>
+        </div>
+    </aside>
+
+    <section class="card explorer-main">
+        <div class="explorer-toolbar">
+            <div>
+                <h2 id="selected-table-title">Pilih sebuah tabel di panel kiri</h2>
+                <p id="selected-table-subtitle" class="muted">Detail kolom, constraint, index, dan baris data akan tampil di sini.</p>
+            </div>
+            <div class="tabs" role="tablist">
+                <button type="button" class="tab-btn active" data-tab="columns">Kolom</button>
+                <button type="button" class="tab-btn" data-tab="constraints">Constraint</button>
+                <button type="button" class="tab-btn" data-tab="indexes">Index</button>
+                <button type="button" class="tab-btn" data-tab="rows">Data</button>
+            </div>
+        </div>
+
+        <div id="tab-columns" class="tab-panel">
+            <div class="table-scroll">
+                <table class="data-table">
+                    <thead>
+                        <tr>
+                            <th>#</th>
+                            <th>Nama Kolom</th>
+                            <th>Tipe Data</th>
+                            <th>Nullable</th>
+                            <th>Default</th>
+                            <th>Primary Key</th>
+                        </tr>
+                    </thead>
+                    <tbody id="columns-tbody">
+                        <tr><td colspan="6" class="muted">Pilih tabel untuk melihat daftar kolom.</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
+        <div id="tab-constraints" class="tab-panel" hidden>
+            <div class="table-scroll">
+                <table class="data-table">
+                    <thead>
+                        <tr>
+                            <th>Nama Constraint</th>
+                            <th>Tipe</th>
+                            <th>Kolom</th>
+                            <th>Definisi SQL</th>
+                        </tr>
+                    </thead>
+                    <tbody id="constraints-tbody">
+                        <tr><td colspan="4" class="muted">Pilih tabel untuk melihat constraint.</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
+        <div id="tab-indexes" class="tab-panel" hidden>
+            <div class="table-scroll">
+                <table class="data-table">
+                    <thead>
+                        <tr>
+                            <th>Nama Index</th>
+                            <th>Primary</th>
+                            <th>Unique</th>
+                            <th>Kolom / Ekspresi</th>
+                            <th>Definisi SQL</th>
+                        </tr>
+                    </thead>
+                    <tbody id="indexes-tbody">
+                        <tr><td colspan="5" class="muted">Pilih tabel untuk melihat index.</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
+        <div id="tab-rows" class="tab-panel" hidden>
+            <div class="rows-controls">
+                <div class="rows-summary" id="rows-pagination-info">Belum ada tabel dipilih.</div>
+                <div class="rows-actions">
+                    <label for="rows-limit-select" class="muted">Baris:</label>
+                    <select id="rows-limit-select">
+                        <option value="25">25</option>
+                        <option value="50" selected>50</option>
+                        <option value="100">100</option>
+                        <option value="200">200</option>
+                    </select>
+                    <button type="button" id="rows-prev-btn" class="btn btn-outline btn-sm" disabled>&laquo; Sebelumnya</button>
+                    <button type="button" id="rows-next-btn" class="btn btn-outline btn-sm" disabled>Berikutnya &raquo;</button>
+                    <button type="button" id="rows-refresh-btn" class="btn btn-outline btn-sm">Segarkan</button>
+                </div>
+            </div>
+            <div class="table-scroll">
+                <table class="data-table" id="rows-table">
+                    <thead id="rows-thead">
+                        <tr><th>Data</th></tr>
+                    </thead>
+                    <tbody id="rows-tbody">
+                        <tr><td class="muted">Pilih tabel untuk melihat isi data.</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </section>
+</section>
+{{end}}

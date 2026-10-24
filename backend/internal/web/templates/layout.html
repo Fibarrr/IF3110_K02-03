@@ -1,0 +1,33 @@
+{{define "layout"}}<!DOCTYPE html>
+<html lang="id">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{.Title}}</title>
+    <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body data-page="{{.Page}}" data-database-id="{{.DatabaseID}}">
+    <header class="topbar" id="app-topbar" {{if eq .Page "login"}}hidden{{end}}>
+        <div class="topbar-brand">
+            <a href="/" class="brand-link">DB Platform</a>
+            <span class="brand-subtitle">PostgreSQL Access, Explorer &amp; Migration</span>
+        </div>
+        <nav class="topbar-nav">
+            <a href="/" class="nav-link {{if eq .Page "workspace"}}active{{end}}">Daftar Database</a>
+            <a href="/admin" id="nav-admin-link" class="nav-link {{if eq .Page "admin"}}active{{end}}" hidden>Panel Admin</a>
+        </nav>
+        <div class="topbar-user">
+            <span id="current-username" class="user-pill">Memuat sesi...</span>
+            <span id="current-role-badge" class="badge badge-neutral" hidden></span>
+            <button type="button" id="logout-btn" class="btn btn-outline btn-sm">Keluar</button>
+        </div>
+    </header>
+
+    <main class="container">
+        <div id="global-alert" class="alert" hidden></div>
+        {{template "content" .}}
+    </main>
+
+    <script src="/static/app.js" defer></script>
+</body>
+</html>{{end}}

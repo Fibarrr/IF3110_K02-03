@@ -1,0 +1,168 @@
+{{define "content"}}
+<section class="page-header">
+    <div>
+        <h1>Panel Platform Admin</h1>
+        <p class="muted">Kelola koneksi database PostgreSQL, pengguna platform, grup, dan pemberian hak akses database.</p>
+    </div>
+    <div class="header-actions">
+        <button type="button" id="admin-refresh-all-btn" class="btn btn-outline">Muat Ulang Semua Data</button>
+    </div>
+</section>
+
+<div class="admin-grid">
+    <!-- 1. Kelola Koneksi Database PostgreSQL -->
+    <section class="card admin-section">
+        <div class="section-title-row">
+            <h2>1. Koneksi Database PostgreSQL</h2>
+            <button type="button" id="reset-db-form-btn" class="btn btn-outline btn-sm">Mode Tambah Baru</button>
+        </div>
+        <form id="db-connection-form" class="form-grid">
+            <input type="hidden" id="db-form-editing-id" value="">
+            <div class="field">
+                <label for="db-id">ID Database (unik, opsional saat buat baru)</label>
+                <input id="db-id" name="id" type="text" placeholder="mis. orders-db">
+            </div>
+            <div class="field">
+                <label for="db-name">Nama Tampilan</label>
+                <input id="db-name" name="name" type="text" required placeholder="mis. Orders Production">
+            </div>
+            <div class="field">
+                <label for="db-host">Host PostgreSQL</label>
+                <input id="db-host" name="host" type="text" required placeholder="localhost">
+            </div>
+            <div class="field">
+                <label for="db-port">Port</label>
+                <input id="db-port" name="port" type="number" value="5432" min="1" max="65535" required>
+            </div>
+            <div class="field">
+                <label for="db-database-name">Nama Database PostgreSQL</label>
+                <input id="db-database-name" name="databaseName" type="text" required placeholder="platform_dev">
+            </div>
+            <div class="field">
+                <label for="db-username">Username Database</label>
+                <input id="db-username" name="username" type="text" required placeholder="platform">
+            </div>
+            <div class="field">
+                <label for="db-password">Password Database <span id="db-password-hint" class="muted"></span></label>
+                <input id="db-password" name="password" type="password" autocomplete="new-password" placeholder="Kosongkan saat edit jika tidak diubah">
+            </div>
+            <div class="field">
+                <label for="db-ssl-mode">SSL Mode</label>
+                <select id="db-ssl-mode" name="sslMode">
+                    <option value="disable">disable</option>
+                    <option value="require">require</option>
+                    <option value="verify-ca">verify-ca</option>
+                    <option value="verify-full">verify-full</option>
+                </select>
+            </div>
+            <div class="field field-full">
+                <label for="db-description">Deskripsi</label>
+                <input id="db-description" name="description" type="text" placeholder="Keterangan singkat penggunaan database">
+            </div>
+            <div class="field field-full">
+                <button type="submit" id="db-submit-btn" class="btn btn-primary">Simpan Koneksi Database</button>
+            </div>
+        </form>
+
+        <div class="table-scroll">
+            <table class="data-table">
+                <thead>
+                    <tr>
+                        <th>ID</th>
+                        <th>Nama</th>
+                        <th>Target (Host:Port/DB)</th>
+                        <th>User &amp; SSL</th>
+                        <th>Status Tes</th>
+                        <th>Aksi</th>
+                    </tr>
+                </thead>
+                <tbody id="admin-databases-tbody">
+                    <tr><td colspan="6" class="muted">Memuat koneksi database...</td></tr>
+                </tbody>
+            </table>
+        </div>
+    </section>
+
+    <!-- 2. Kelola Grup, Anggota & Hak Akses Database -->
+    <section class="card admin-section">
+        <h2>2. Grup, Anggota &amp; Hak Akses Database</h2>
+        <form id="create-group-form" class="inline-form">
+            <input id="new-group-name" type="text" required placeholder="Nama grup baru (mis. tim-analis)">
+            <button type="submit" class="btn btn-primary">Buat Grup</button>
+        </form>
+
+        <div class="table-scroll">
+            <table class="data-table">
+                <thead>
+                    <tr>
+                        <th>ID</th>
+                        <th>Nama Grup</th>
+                        <th>Aksi</th>
+                    </tr>
+                </thead>
+                <tbody id="admin-groups-tbody">
+                    <tr><td colspan="3" class="muted">Memuat daftar grup...</td></tr>
+                </tbody>
+            </table>
+        </div>
+
+        <div id="group-detail-panel" class="subcard" hidden>
+            <div class="section-title-row">
+                <h3 id="selected-group-heading">Detail Grup</h3>
+                <span class="muted">Akses database diberikan melalui grup (View Only / View + Edit).</span>
+            </div>
+
+            <div class="split-columns">
+                <div>
+                    <h4>Anggota Grup</h4>
+                    <form id="add-member-form" class="inline-form">
+                        <select id="member-user-select" required></select>
+                        <button type="submit" class="btn btn-outline btn-sm">Tambah Anggota</button>
+                    </form>
+                    <ul id="group-members-list" class="item-list"></ul>
+                </div>
+
+                <div>
+                    <h4>Izin Akses Database</h4>
+                    <form id="grant-db-form" class="inline-form">
+                        <select id="grant-db-select" required></select>
+                        <select id="grant-access-select" required>
+                            <option value="view_only">View Only</option>
+                            <option value="view_edit">View + Edit</option>
+                        </select>
+                        <button type="submit" class="btn btn-primary btn-sm">Simpan Izin</button>
+                    </form>
+                    <ul id="group-grants-list" class="item-list"></ul>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- 3. Kelola Pengguna -->
+    <section class="card admin-section">
+        <h2>3. Pengguna Platform</h2>
+        <form id="create-user-form" class="inline-form">
+            <input id="new-user-username" type="text" required placeholder="Username (3-64 karakter)">
+            <input id="new-user-password" type="password" required placeholder="Password (minimal 12 karakter)">
+            <button type="submit" class="btn btn-primary">Tambah Pengguna</button>
+        </form>
+
+        <div class="table-scroll">
+            <table class="data-table">
+                <thead>
+                    <tr>
+                        <th>ID</th>
+                        <th>Username</th>
+                        <th>Peran</th>
+                        <th>Status</th>
+                        <th>Aksi</th>
+                    </tr>
+                </thead>
+                <tbody id="admin-users-tbody">
+                    <tr><td colspan="5" class="muted">Memuat daftar pengguna...</td></tr>
+                </tbody>
+            </table>
+        </div>
+    </section>
+</div>
+{{end}}

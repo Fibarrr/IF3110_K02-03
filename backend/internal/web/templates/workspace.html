@@ -1,0 +1,16 @@
+{{define "content"}}
+<section class="page-header">
+    <div>
+        <h1>Pilih Database</h1>
+        <p class="muted">Daftar database PostgreSQL yang dapat Anda akses berdasarkan keanggotaan grup.</p>
+    </div>
+    <div class="header-actions">
+        <button type="button" id="refresh-databases-btn" class="btn btn-outline">Muat Ulang</button>
+        <a href="/admin" id="workspace-admin-cta" class="btn btn-primary" hidden>Kelola Platform &amp; Koneksi</a>
+    </div>
+</section>
+
+<section id="accessible-databases-grid" class="db-grid">
+    <div class="card muted">Memuat daftar database...</div>
+</section>
+{{end}}
