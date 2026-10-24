@@ -11,6 +11,8 @@ import (
 	"time"
 
 	"github.com/Fibarrr/IF3110_K02-03/backend/internal/accesscontrol"
+	"github.com/Fibarrr/IF3110_K02-03/backend/internal/databasemanagement"
+	"github.com/Fibarrr/IF3110_K02-03/backend/internal/web"
 	_ "github.com/lib/pq"
 )
 
@@ -20,16 +22,10 @@ func main() {
 		port = "8080"
 	}
 
-	mux := http.NewServeMux()
-	mux.HandleFunc("GET /health", func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte("{\"status\":\"ok\"}\n"))
-	})
 	var apiHandler http.Handler = http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
 		w.WriteHeader(http.StatusServiceUnavailable)
-		_ = json.NewEncoder(w).Encode(map[string]string{"error": "database access control belum dikonfigurasi"})
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": "database platform belum dikonfigurasi"})
 	})
 
 	databaseURL := strings.TrimSpace(os.Getenv("DATABASE_URL"))
@@ -45,10 +41,15 @@ func main() {
 			cancel()
 			log.Fatal("PostgreSQL tidak bisa dihubungi")
 		}
-		store := accesscontrol.NewStore(db)
-		if err := store.Migrate(ctx); err != nil {
+		acStore := accesscontrol.NewStore(db)
+		if err := acStore.Migrate(ctx); err != nil {
 			cancel()
 			log.Fatal("gagal menyiapkan tabel Access Control")
+		}
+		dmStore := databasemanagement.NewStore(db)
+		if err := dmStore.Migrate(ctx); err != nil {
+			cancel()
+			log.Fatal("gagal menyiapkan tabel Database Management")
 		}
 		cancel()
 
@@ -59,16 +60,28 @@ func main() {
 				log.Fatal("PLATFORM_ADMIN_USERNAME dan PLATFORM_ADMIN_PASSWORD harus diisi bersama")
 			}
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-			err := store.BootstrapAdmin(ctx, adminUsername, adminPassword)
+			err := acStore.BootstrapAdmin(ctx, adminUsername, adminPassword)
 			cancel()
 			if err != nil {
 				log.Fatal("gagal menyiapkan Platform Admin awal")
 			}
 		}
 
-		apiHandler = accesscontrol.NewHTTPHandler(store, accesscontrol.NewSessionManager(db, accesscontrol.DefaultSessionPolicy()), strings.EqualFold(os.Getenv("COOKIE_SECURE"), "true"))
+		sessions := accesscontrol.NewSessionManager(db, accesscontrol.DefaultSessionPolicy())
+		acHandler := accesscontrol.NewHTTPHandler(acStore, sessions, strings.EqualFold(os.Getenv("COOKIE_SECURE"), "true"))
+		dmViewer := databasemanagement.NewViewer(dmStore)
+		dmHandler := databasemanagement.NewHTTPHandler(dmStore, dmViewer, acHandler, acStore)
+
+		apiMux := http.NewServeMux()
+		dmHandler.RegisterRoutes(apiMux)
+		apiMux.Handle("/api/", acHandler)
+		apiHandler = apiMux
 	}
-	mux.Handle("/api/", apiHandler)
+
+	mux, err := buildServerMux(apiHandler)
+	if err != nil {
+		log.Fatal("gagal menyiapkan router web")
+	}
 
 	server := &http.Server{
 		Addr:              ":" + port,
@@ -77,4 +90,21 @@ func main() {
 	}
 	log.Printf("backend listening on :%s", port)
 	log.Fatal(server.ListenAndServe())
+}
+
+func buildServerMux(apiHandler http.Handler) (*http.ServeMux, error) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /health", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("{\"status\":\"ok\"}\n"))
+	})
+	mux.Handle("/api/", apiHandler)
+
+	webHandler, err := web.NewHandler()
+	if err != nil {
+		return nil, err
+	}
+	webHandler.RegisterRoutes(mux, nil)
+	return mux, nil
 }
