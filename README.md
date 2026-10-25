@@ -63,3 +63,14 @@ Izin database diberikan lewat grup. Kirim nilai `view_only` atau `view_edit` saa
 Jangan kirim ID sesi lewat URL atau simpan di local storage.
 
 Nilai sesi saat ini: idle timeout 30 menit, masa berlaku maksimum 12 jam, rotasi setiap 15 menit, dan grace period token lama 30 detik. Rotasi tidak memperpanjang masa berlaku maksimum.
+
+## Migration
+
+Migration disimpan sebagai draft dan riwayat di database platform, lalu SQL dijalankan ke database target. Migration diberi versi berurutan per database; versi berikutnya menunggu versi sebelumnya sukses. Eksekusi memakai transaksi PostgreSQL, maksimal 256 KiB per SQL dan 2 menit per eksekusi. Lihat aturan dan format API di `backend/internal/migration/POLICY.md`.
+
+- `GET /api/databases/{databaseID}/migrations` dan `GET /api/databases/{databaseID}/migrations/{migrationID}` untuk melihat SQL dan riwayat (perlu `view_only`).
+- `POST /api/databases/{databaseID}/migrations` untuk membuat draft.
+- `PUT /api/databases/{databaseID}/migrations/{migrationID}` untuk mengubah draft atau migration yang gagal.
+- `POST /api/databases/{databaseID}/migrations/{migrationID}/execute` untuk menjalankan SQL (perlu `view_edit`).
+
+Semua request yang mengubah data juga perlu token CSRF. Jalankan tes unit Migration dengan `go test ./internal/migration`; tes integrasi PostgreSQL dapat dijalankan dengan `TEST_DATABASE_URL` yang sama seperti bagian tes integrasi di atas.

@@ -12,6 +12,7 @@ import (
 
 	"github.com/Fibarrr/IF3110_K02-03/backend/internal/accesscontrol"
 	"github.com/Fibarrr/IF3110_K02-03/backend/internal/databasemanagement"
+	"github.com/Fibarrr/IF3110_K02-03/backend/internal/migration"
 	"github.com/Fibarrr/IF3110_K02-03/backend/internal/web"
 	_ "github.com/lib/pq"
 )
@@ -51,6 +52,11 @@ func main() {
 			cancel()
 			log.Fatal("gagal menyiapkan tabel Database Management")
 		}
+		migrationStore := migration.NewStore(db, dmStore)
+		if err := migrationStore.Migrate(ctx); err != nil {
+			cancel()
+			log.Fatal("gagal menyiapkan tabel Migration")
+		}
 		cancel()
 
 		adminUsername := os.Getenv("PLATFORM_ADMIN_USERNAME")
@@ -71,9 +77,11 @@ func main() {
 		acHandler := accesscontrol.NewHTTPHandler(acStore, sessions, strings.EqualFold(os.Getenv("COOKIE_SECURE"), "true"))
 		dmViewer := databasemanagement.NewViewer(dmStore)
 		dmHandler := databasemanagement.NewHTTPHandler(dmStore, dmViewer, acHandler, acStore)
+		migrationHandler := migration.NewHTTPHandler(migrationStore, acHandler)
 
 		apiMux := http.NewServeMux()
 		dmHandler.RegisterRoutes(apiMux)
+		migrationHandler.RegisterRoutes(apiMux)
 		apiMux.Handle("/api/", acHandler)
 		apiHandler = apiMux
 	}
