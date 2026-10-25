@@ -110,12 +110,6 @@ func NewViewer(store *Store) *Viewer {
 
 func (v *Viewer) PingConnection(ctx context.Context, databaseID string) (ConnectionStatus, error) {
 	checkedAt := time.Now().UTC()
-	release, err := v.store.acquireTargetSlot(ctx)
-	if err != nil {
-		return ConnectionStatus{DatabaseID: databaseID, Connected: false, Error: err.Error(), CheckedAt: checkedAt}, err
-	}
-	defer release()
-
 	targetDB, conn, err := v.store.OpenTargetDB(ctx, databaseID)
 	if err != nil {
 		if errors.Is(err, ErrNotFound) {
@@ -155,12 +149,6 @@ func (v *Viewer) PingConnection(ctx context.Context, databaseID string) (Connect
 }
 
 func (v *Viewer) ListSchemas(ctx context.Context, databaseID string) ([]SchemaSummary, error) {
-	release, err := v.store.acquireTargetSlot(ctx)
-	if err != nil {
-		return nil, err
-	}
-	defer release()
-
 	targetDB, _, err := v.store.OpenTargetDB(ctx, databaseID)
 	if err != nil {
 		return nil, err
@@ -242,12 +230,6 @@ func (v *Viewer) GetTableDetails(ctx context.Context, databaseID, schemaName, ta
 	if schemaName == "" || tableName == "" || isSystemSchema(schemaName) {
 		return TableDetails{}, ErrNotFound
 	}
-
-	release, err := v.store.acquireTargetSlot(ctx)
-	if err != nil {
-		return TableDetails{}, err
-	}
-	defer release()
 
 	targetDB, _, err := v.store.OpenTargetDB(ctx, databaseID)
 	if err != nil {
@@ -412,12 +394,6 @@ func (v *Viewer) GetTableRows(ctx context.Context, databaseID, schemaName, table
 		offset = 0
 	}
 
-	release, err := v.store.acquireTargetSlot(ctx)
-	if err != nil {
-		return TableRowsPage{}, err
-	}
-	defer release()
-
 	targetDB, _, err := v.store.OpenTargetDB(ctx, databaseID)
 	if err != nil {
 		return TableRowsPage{}, err
@@ -541,29 +517,23 @@ func formatCellValue(v any) any {
 	case time.Time:
 		return val.UTC().Format(time.RFC3339)
 	case float64:
-		if math.IsNaN(val) {
-			return "NaN"
-		}
-		if math.IsInf(val, 1) {
-			return "Infinity"
-		}
-		if math.IsInf(val, -1) {
-			return "-Infinity"
-		}
-		return val
+		return formatFloat(val, val)
 	case float32:
-		f64 := float64(val)
-		if math.IsNaN(f64) {
-			return "NaN"
-		}
-		if math.IsInf(f64, 1) {
-			return "Infinity"
-		}
-		if math.IsInf(f64, -1) {
-			return "-Infinity"
-		}
-		return val
+		return formatFloat(float64(val), val)
 	default:
 		return val
+	}
+}
+
+func formatFloat(f64 float64, original any) any {
+	switch {
+	case math.IsNaN(f64):
+		return "NaN"
+	case math.IsInf(f64, 1):
+		return "Infinity"
+	case math.IsInf(f64, -1):
+		return "-Infinity"
+	default:
+		return original
 	}
 }

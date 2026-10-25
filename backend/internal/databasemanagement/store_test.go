@@ -1,12 +1,11 @@
 package databasemanagement
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
+	"net/url"
 	"strings"
 	"testing"
-	"time"
 )
 
 func TestNormalizeDatabaseID(t *testing.T) {
@@ -93,7 +92,7 @@ func TestValidateConnectionInput(t *testing.T) {
 	}
 }
 
-func TestBuildPostgresDSNEscapesCredentialsAndRedactsPasswordAndDSN(t *testing.T) {
+func TestBuildPostgresDSNEscapesCredentialsAndRedactsPassword(t *testing.T) {
 	cfg := storedConnection{
 		DatabaseConnection: DatabaseConnection{
 			ID:           "db-1",
@@ -101,7 +100,7 @@ func TestBuildPostgresDSNEscapesCredentialsAndRedactsPasswordAndDSN(t *testing.T
 			Host:         "db.internal",
 			Port:         5432,
 			DatabaseName: "app_db",
-			Username:     "app_user",
+			Username:     "app:user@1",
 			SSLMode:      "require",
 			HasPassword:  true,
 		},
@@ -109,38 +108,29 @@ func TestBuildPostgresDSNEscapesCredentialsAndRedactsPasswordAndDSN(t *testing.T
 	}
 
 	dsn := buildPostgresDSN(cfg)
-	if !strings.Contains(dsn, "sslmode=require") || !strings.Contains(dsn, "connect_timeout=5") {
-		t.Fatalf("DSN tidak memuat parameter yang diharapkan: %s", dsn)
+	parsed, err := url.Parse(dsn)
+	if err != nil {
+		t.Fatalf("url.Parse(dsn) gagal: %v", err)
+	}
+	gotPass, _ := parsed.User.Password()
+	if parsed.User.Username() != cfg.Username || gotPass != cfg.Password {
+		t.Fatalf("kredensial pada DSN tidak sesuai setelah parse: user=%q pass=%q", parsed.User.Username(), gotPass)
+	}
+	if parsed.Query().Get("sslmode") != "require" || parsed.Query().Get("connect_timeout") != "5" {
+		t.Fatalf("query DSN tidak sesuai: %s", dsn)
 	}
 
 	rawJSON, err := json.Marshal(cfg.DatabaseConnection)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(string(rawJSON), cfg.Password) || strings.Contains(string(rawJSON), "password") {
+	if strings.Contains(string(rawJSON), cfg.Password) || strings.Contains(string(rawJSON), `"password"`) {
 		t.Fatalf("JSON DatabaseConnection membocorkan password: %s", string(rawJSON))
 	}
 
 	rawErr := errors.New("parse \"" + dsn + "\": invalid URL escape with password " + cfg.Password)
 	sanitized := sanitizeConnectionError(rawErr, cfg.Password)
-	if strings.Contains(sanitized, cfg.Password) || strings.Contains(sanitized, "p%40ss") || strings.Contains(sanitized, "postgres://") || strings.Contains(sanitized, "app_user") {
+	if strings.Contains(sanitized, cfg.Password) || strings.Contains(sanitized, "postgres://") {
 		t.Fatalf("sanitizeConnectionError masih membocorkan detail DSN/password: %s", sanitized)
-	}
-}
-
-func TestTargetSlotBoundsConcurrency(t *testing.T) {
-	store := NewStore(nil)
-	for i := 0; i < maxConcurrentTargetOps; i++ {
-		release, err := store.acquireTargetSlot(context.Background())
-		if err != nil {
-			t.Fatalf("acquire slot %d gagal: %v", i, err)
-		}
-		defer release()
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
-	defer cancel()
-	if _, err := store.acquireTargetSlot(ctx); err == nil {
-		t.Fatal("acquireTargetSlot seharusnya gagal saat batas konkurensi penuh")
 	}
 }

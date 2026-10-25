@@ -10,7 +10,6 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/lib/pq"
@@ -18,8 +17,6 @@ import (
 
 //go:embed schema.sql
 var schema embed.FS
-
-const maxConcurrentTargetOps = 8
 
 var (
 	ErrNotFound         = errors.New("database tidak ditemukan")
@@ -71,30 +68,11 @@ type storedConnection struct {
 }
 
 type Store struct {
-	db        *sql.DB
-	targetSem chan struct{}
+	db *sql.DB
 }
 
 func NewStore(db *sql.DB) *Store {
-	return &Store{
-		db:        db,
-		targetSem: make(chan struct{}, maxConcurrentTargetOps),
-	}
-}
-
-func (s *Store) acquireTargetSlot(ctx context.Context) (func(), error) {
-	if s == nil || s.targetSem == nil {
-		return func() {}, nil
-	}
-	select {
-	case s.targetSem <- struct{}{}:
-		var once sync.Once
-		return func() {
-			once.Do(func() { <-s.targetSem })
-		}, nil
-	case <-ctx.Done():
-		return nil, TargetConnectionError{Message: "batas antrean koneksi database target terlampaui"}
-	}
+	return &Store{db: db}
 }
 
 func (s *Store) Migrate(ctx context.Context) error {
@@ -340,8 +318,7 @@ func isValidHost(host string) bool {
 	if net.ParseIP(host) != nil {
 		return true
 	}
-	labels := strings.Split(host, ".")
-	for _, label := range labels {
+	for _, label := range strings.Split(host, ".") {
 		if len(label) < 1 || len(label) > 63 || strings.HasPrefix(label, "-") || strings.HasSuffix(label, "-") {
 			return false
 		}

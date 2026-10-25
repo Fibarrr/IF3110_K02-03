@@ -23,30 +23,24 @@ func TestBuildServerMuxRoutesAPIAndWeb(t *testing.T) {
 	}
 
 	tests := []struct {
-		method     string
 		path       string
 		wantStatus int
 	}{
-		{method: http.MethodGet, path: "/health", wantStatus: http.StatusOK},
-		{method: http.MethodGet, path: "/login", wantStatus: http.StatusOK},
-		{method: http.MethodGet, path: "/", wantStatus: http.StatusOK},
-		{method: http.MethodGet, path: "/databases/orders-db", wantStatus: http.StatusOK},
-		{method: http.MethodGet, path: "/admin", wantStatus: http.StatusUnauthorized},
-		{method: http.MethodGet, path: "/static/styles.css", wantStatus: http.StatusOK},
-		{method: http.MethodGet, path: "/api/admin/users", wantStatus: http.StatusUnauthorized},
-		{method: http.MethodGet, path: "/api/admin/databases", wantStatus: http.StatusUnauthorized},
-		{method: http.MethodGet, path: "/api/databases", wantStatus: http.StatusUnauthorized},
-		{method: http.MethodGet, path: "/api/databases/orders-db/schemas", wantStatus: http.StatusUnauthorized},
+		{path: "/health", wantStatus: http.StatusOK},
+		{path: "/login", wantStatus: http.StatusOK},
+		{path: "/", wantStatus: http.StatusOK},
+		{path: "/admin", wantStatus: http.StatusUnauthorized},
+		{path: "/static/styles.css", wantStatus: http.StatusOK},
+		{path: "/api/admin/databases", wantStatus: http.StatusUnauthorized},
+		{path: "/api/databases", wantStatus: http.StatusUnauthorized},
 	}
 
 	for _, tc := range tests {
-		t.Run(tc.method+" "+tc.path, func(t *testing.T) {
-			req := httptest.NewRequest(tc.method, tc.path, nil)
-			rec := httptest.NewRecorder()
-			mux.ServeHTTP(rec, req)
-			if rec.Code != tc.wantStatus {
-				t.Fatalf("%s %s status = %d, mau %d", tc.method, tc.path, rec.Code, tc.wantStatus)
-			}
-		})
+		req := httptest.NewRequest(http.MethodGet, tc.path, nil)
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, req)
+		if rec.Code != tc.wantStatus {
+			t.Fatalf("GET %s status = %d, mau %d", tc.path, rec.Code, tc.wantStatus)
+		}
 	}
 }

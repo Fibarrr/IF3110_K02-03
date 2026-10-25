@@ -11,21 +11,6 @@ import (
 	"github.com/Fibarrr/IF3110_K02-03/backend/internal/accesscontrol"
 )
 
-type CatalogStore interface {
-	ListConnections(ctx context.Context) ([]DatabaseConnection, error)
-	GetConnection(ctx context.Context, databaseID string) (DatabaseConnection, error)
-	CreateConnection(ctx context.Context, input ConnectionInput) (DatabaseConnection, error)
-	UpdateConnection(ctx context.Context, databaseID string, input ConnectionInput) (DatabaseConnection, error)
-	DeleteConnection(ctx context.Context, databaseID string) error
-}
-
-type SchemaViewer interface {
-	PingConnection(ctx context.Context, databaseID string) (ConnectionStatus, error)
-	ListSchemas(ctx context.Context, databaseID string) ([]SchemaSummary, error)
-	GetTableDetails(ctx context.Context, databaseID, schemaName, tableName string) (TableDetails, error)
-	GetTableRows(ctx context.Context, databaseID, schemaName, tableName string, limit, offset int) (TableRowsPage, error)
-}
-
 type AuthGuard interface {
 	RequireUser(next http.Handler) http.Handler
 	RequirePlatformAdmin(next http.Handler) http.Handler
@@ -35,8 +20,6 @@ type AuthGuard interface {
 
 type AccessResolver interface {
 	EffectiveAccess(ctx context.Context, userID int64, databaseID string) (accesscontrol.DatabaseAccess, error)
-	ListGroups(ctx context.Context) ([]accesscontrol.Group, error)
-	RemoveDatabaseAccess(ctx context.Context, groupID int64, databaseID string) error
 }
 
 type AccessibleDatabase struct {
@@ -46,13 +29,13 @@ type AccessibleDatabase struct {
 
 type HTTPHandler struct {
 	http.Handler
-	store  CatalogStore
-	viewer SchemaViewer
+	store  *Store
+	viewer *Viewer
 	auth   AuthGuard
 	access AccessResolver
 }
 
-func NewHTTPHandler(store CatalogStore, viewer SchemaViewer, auth AuthGuard, access AccessResolver) *HTTPHandler {
+func NewHTTPHandler(store *Store, viewer *Viewer, auth AuthGuard, access AccessResolver) *HTTPHandler {
 	h := &HTTPHandler{
 		store:  store,
 		viewer: viewer,
@@ -139,27 +122,7 @@ func (h *HTTPHandler) updateDatabase(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *HTTPHandler) deleteDatabase(w http.ResponseWriter, r *http.Request) {
-	dbID := strings.ToLower(strings.TrimSpace(r.PathValue("databaseID")))
-	if _, err := h.store.GetConnection(r.Context(), dbID); err != nil {
-		writeStoreError(w, err)
-		return
-	}
-	// Jika store bukan *Store yang sudah menghapus grant dalam transaksi SQL yang sama,
-	// cabut semua grant melalui AccessResolver dan pastikan tidak ada error sebelum menghapus koneksi.
-	if _, isSQLStore := h.store.(*Store); !isSQLStore && h.access != nil {
-		groups, err := h.access.ListGroups(r.Context())
-		if err != nil {
-			writeError(w, http.StatusInternalServerError, "gagal membersihkan izin grup untuk database")
-			return
-		}
-		for _, g := range groups {
-			if err := h.access.RemoveDatabaseAccess(r.Context(), g.ID, dbID); err != nil && !errors.Is(err, accesscontrol.ErrNotFound) {
-				writeError(w, http.StatusInternalServerError, "gagal membersihkan izin grup untuk database")
-				return
-			}
-		}
-	}
-	if err := h.store.DeleteConnection(r.Context(), dbID); err != nil {
+	if err := h.store.DeleteConnection(r.Context(), r.PathValue("databaseID")); err != nil {
 		writeStoreError(w, err)
 		return
 	}
@@ -180,7 +143,7 @@ func (h *HTTPHandler) testDatabaseConnection(w http.ResponseWriter, r *http.Requ
 }
 
 func (h *HTTPHandler) listAccessibleDatabases(w http.ResponseWriter, r *http.Request) {
-	user, ok := h.currentUser(r)
+	user, ok := accesscontrol.UserFromContext(r.Context())
 	if !ok {
 		writeError(w, http.StatusUnauthorized, "perlu login")
 		return
@@ -219,14 +182,8 @@ func (h *HTTPHandler) getDatabaseSummary(w http.ResponseWriter, r *http.Request)
 		writeStoreError(w, err)
 		return
 	}
-	var access accesscontrol.DatabaseAccess = accesscontrol.AccessViewOnly
-	if user, ok := h.currentUser(r); ok && h.access != nil {
-		if resolved, err := h.access.EffectiveAccess(r.Context(), user.ID, dbID); err == nil {
-			access = resolved
-		}
-	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"database": AccessibleDatabase{DatabaseConnection: conn, Access: access},
+		"database": AccessibleDatabase{DatabaseConnection: conn, Access: h.resolveUserAccess(r, dbID)},
 		"status":   status,
 	})
 }
@@ -243,15 +200,9 @@ func (h *HTTPHandler) listSchemas(w http.ResponseWriter, r *http.Request) {
 		writeStoreError(w, err)
 		return
 	}
-	var access accesscontrol.DatabaseAccess = accesscontrol.AccessViewOnly
-	if user, ok := h.currentUser(r); ok && h.access != nil {
-		if resolved, err := h.access.EffectiveAccess(r.Context(), user.ID, dbID); err == nil {
-			access = resolved
-		}
-	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"database": conn,
-		"access":   access,
+		"access":   h.resolveUserAccess(r, dbID),
 		"schemas":  schemas,
 	})
 }
@@ -281,16 +232,13 @@ func (h *HTTPHandler) getTableRows(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, page)
 }
 
-func (h *HTTPHandler) currentUser(r *http.Request) (accesscontrol.User, bool) {
-	if u, ok := accesscontrol.UserFromContext(r.Context()); ok {
-		return u, true
+func (h *HTTPHandler) resolveUserAccess(r *http.Request, databaseID string) accesscontrol.DatabaseAccess {
+	if user, ok := accesscontrol.UserFromContext(r.Context()); ok && h.access != nil {
+		if resolved, err := h.access.EffectiveAccess(r.Context(), user.ID, databaseID); err == nil {
+			return resolved
+		}
 	}
-	if custom, ok := h.auth.(interface {
-		UserFromRequest(*http.Request) (accesscontrol.User, bool)
-	}); ok {
-		return custom.UserFromRequest(r)
-	}
-	return accesscontrol.User{}, false
+	return accesscontrol.AccessViewOnly
 }
 
 func decodeJSON(w http.ResponseWriter, r *http.Request, target any) bool {

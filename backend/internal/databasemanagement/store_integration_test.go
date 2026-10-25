@@ -119,11 +119,22 @@ func TestPostgresDatabaseManagementIntegration(t *testing.T) {
 		Password:     password,
 		SSLMode:      sslMode,
 	})
-	if err != nil {
-		t.Fatal(err)
+	if err != nil || created.ID != connID {
+		t.Fatalf("CreateConnection gagal: conn=%#v err=%v", created, err)
 	}
-	if created.ID != connID {
-		t.Fatalf("created.ID = %q, mau %q", created.ID, connID)
+
+	// UpdateConnection with empty password must preserve stored password
+	updated, err := dmStore.UpdateConnection(ctx, connID, ConnectionInput{
+		Name:         "Updated PG Test " + suffix,
+		Host:         host,
+		Port:         port,
+		DatabaseName: dbName,
+		Username:     username,
+		Password:     "",
+		SSLMode:      sslMode,
+	})
+	if err != nil || !updated.HasPassword {
+		t.Fatalf("UpdateConnection seharusnya mempertahankan password: updated=%#v err=%v", updated, err)
 	}
 
 	status, err := viewer.PingConnection(ctx, connID)
@@ -154,11 +165,8 @@ func TestPostgresDatabaseManagementIntegration(t *testing.T) {
 			foundCompositeCols = idx.Columns
 		}
 	}
-	if !reflect.DeepEqual(foundPrimaryCols, []string{"id"}) {
-		t.Fatalf("kolom index tunggal = %#v, mau [id]", foundPrimaryCols)
-	}
-	if !reflect.DeepEqual(foundCompositeCols, []string{"label", "id"}) {
-		t.Fatalf("kolom index komposit = %#v, mau [label id]", foundCompositeCols)
+	if !reflect.DeepEqual(foundPrimaryCols, []string{"id"}) || !reflect.DeepEqual(foundCompositeCols, []string{"label", "id"}) {
+		t.Fatalf("kolom index salah: pkey=%#v composite=%#v", foundPrimaryCols, foundCompositeCols)
 	}
 
 	rowsPage, err := viewer.GetTableRows(ctx, connID, schemaName, "sample_items", 10, 0)
@@ -166,7 +174,7 @@ func TestPostgresDatabaseManagementIntegration(t *testing.T) {
 		t.Fatalf("GetTableRows gagal: page=%#v err=%v", rowsPage, err)
 	}
 
-	// Verify that DeleteConnection atomically removes grants in PostgreSQL
+	// Verify HTTP handler + Access Control integration on real PostgreSQL
 	user, err := acStore.CreateUser(ctx, "viewer_"+suffix, "password-kuat-123")
 	if err != nil {
 		t.Fatal(err)
@@ -181,12 +189,6 @@ func TestPostgresDatabaseManagementIntegration(t *testing.T) {
 	if err := acStore.SetDatabaseAccess(ctx, group.ID, connID, accesscontrol.AccessViewOnly); err != nil {
 		t.Fatal(err)
 	}
-	if err := dmStore.DeleteConnection(ctx, connID); err != nil {
-		t.Fatal(err)
-	}
-	if access, err := acStore.EffectiveAccess(ctx, user.ID, connID); err != nil || access != accesscontrol.AccessNone {
-		t.Fatalf("grant seharusnya terhapus bersama koneksi, dapat access=%q err=%v", access, err)
-	}
 
 	sessions := accesscontrol.NewSessionManager(db, accesscontrol.DefaultSessionPolicy())
 	acHandler := accesscontrol.NewHTTPHandler(acStore, sessions, false)
@@ -196,10 +198,23 @@ func TestPostgresDatabaseManagementIntegration(t *testing.T) {
 	dmHandler.RegisterRoutes(mux)
 	mux.Handle("/api/", acHandler)
 
+	userToken, _, _, err := sessions.Create(ctx, user.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
 	req := httptest.NewRequest(http.MethodGet, "/api/databases/"+connID+"/schemas", nil)
+	req.AddCookie(&http.Cookie{Name: "if3110_session", Value: userToken})
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, req)
-	if rec.Code != http.StatusUnauthorized {
-		t.Fatalf("tanpa login status = %d, mau %d", rec.Code, http.StatusUnauthorized)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("viewer dengan grant view_only status = %d, mau 200: %s", rec.Code, rec.Body.String())
+	}
+
+	// DeleteConnection atomically removes grants in PostgreSQL
+	if err := dmStore.DeleteConnection(ctx, connID); err != nil {
+		t.Fatal(err)
+	}
+	if access, err := acStore.EffectiveAccess(ctx, user.ID, connID); err != nil || access != accesscontrol.AccessNone {
+		t.Fatalf("grant seharusnya terhapus bersama koneksi, dapat access=%q err=%v", access, err)
 	}
 }
