@@ -11,7 +11,5 @@
 - Daftar schema dan tabel mengecualikan schema internal PostgreSQL (`pg_catalog`, `information_schema`, `pg_toast*`, dan `pg_temp*`).
 - Pembacaan baris data tabel (`GET /api/databases/{databaseID}/schemas/{schemaName}/tables/{tableName}/rows`) wajib memverifikasi keberadaan schema dan tabel terlebih dahulu di katalog PostgreSQL, mengutip identifier dengan aman (`pq.QuoteIdentifier`), dan berjalan di dalam transaksi `READ ONLY` dengan batas waktu 5 detik.
 - Paginasi pembacaan data tabel dibatasi dengan `limit` default 50 (minimum 1, maksimum 200) dan `offset` minimum 0.
-- Perubahan baris hanya tersedia untuk akses `view_edit`, wajib lolos pemeriksaan CSRF, memvalidasi tabel/kolom lewat katalog PostgreSQL, dan mengutip seluruh identifier. Nilai disalurkan sebagai parameter query.
-- Edit dan hapus baris hanya diizinkan pada tabel yang memiliki primary key; seluruh kolom primary key dipakai sebagai syarat identifikasi baris. Kolom identity dan generated tidak dapat diisi langsung.
-- Perubahan struktur dari UI dibuat sebagai draft migration dan tidak dijalankan otomatis.
+- Database Viewer hanya menyediakan pembacaan metadata dan baris data. Perubahan pada database target dilakukan melalui alur Migration.
 - Kegagalan koneksi ke database target dikembalikan sebagai `502 Bad Gateway` dengan pesan error yang telah disanitasi sehingga password atau DSN tidak pernah bocor ke client.

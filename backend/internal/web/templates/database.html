@@ -17,7 +17,6 @@
 <div class="workspace-tabs" role="tablist" aria-label="Database tools">
     <button type="button" class="workspace-tab-btn" data-workspace-tab="visualizer">Schema Visualizer</button>
     <button type="button" class="workspace-tab-btn active" data-workspace-tab="explorer">Schema &amp; Table Viewer</button>
-    <button type="button" class="workspace-tab-btn" data-workspace-tab="table-editor">Table Editor</button>
     <button type="button" class="workspace-tab-btn" data-workspace-tab="migrations">Migration Editor</button>
 </div>
 
@@ -155,75 +154,6 @@
         </div>
     </section>
 </section>
-</section>
-
-<section id="workspace-table-editor" class="workspace-panel" hidden>
-    <div class="table-editor-layout">
-        <section class="card">
-            <div class="section-title-row">
-                <div>
-                    <h2 id="table-editor-title">Pilih tabel di Schema &amp; Table Viewer</h2>
-                    <p class="muted">Tambah, ubah, atau hapus baris. Edit dan hapus membutuhkan primary key.</p>
-                </div>
-                <button type="button" id="table-row-add-btn" class="btn btn-primary" hidden>Tambah Baris</button>
-            </div>
-            <form id="table-row-form" class="table-row-form" hidden>
-                <div id="table-row-fields" class="form-grid"></div>
-                <div class="header-actions">
-                    <button type="button" id="table-row-cancel-btn" class="btn btn-outline">Batal</button>
-                    <button type="submit" id="table-row-save-btn" class="btn btn-primary">Simpan Baris</button>
-                </div>
-            </form>
-            <div class="table-scroll">
-                <table class="data-table">
-                    <thead id="editor-rows-thead"><tr><th>Pilih tabel terlebih dahulu.</th></tr></thead>
-                    <tbody id="editor-rows-tbody"><tr><td class="muted">Pilih tabel di Schema &amp; Table Viewer.</td></tr></tbody>
-                </table>
-            </div>
-        </section>
-
-        <section class="card">
-            <div class="section-title-row">
-                <div>
-                    <h2>Edit Struktur Tabel</h2>
-                    <p class="muted">Perubahan struktur disimpan sebagai draft migration agar bisa ditinjau sebelum dijalankan.</p>
-                </div>
-            </div>
-            <form id="structure-editor-form" class="form-stack">
-                <div class="field">
-                    <label for="structure-operation">Operasi</label>
-                    <select id="structure-operation">
-                        <option value="add-column">Tambah kolom</option>
-                        <option value="rename-column">Ubah nama kolom</option>
-                        <option value="drop-column">Hapus kolom</option>
-                    </select>
-                </div>
-                <div class="field" id="structure-current-column-field">
-                    <label for="structure-current-column">Kolom saat ini</label>
-                    <select id="structure-current-column"></select>
-                </div>
-                <div class="field" id="structure-new-column-field">
-                    <label for="structure-new-column">Nama kolom baru</label>
-                    <input id="structure-new-column" type="text" placeholder="mis. status">
-                </div>
-                <div class="field" id="structure-data-type-field">
-                    <label for="structure-data-type">Tipe data PostgreSQL</label>
-                    <input id="structure-data-type" type="text" placeholder="mis. VARCHAR(100), INTEGER, TIMESTAMPTZ">
-                </div>
-                <label class="checkbox-label" id="structure-nullable-field"><input id="structure-nullable" type="checkbox" checked> Izinkan NULL</label>
-                <div class="field" id="structure-default-field">
-                    <label for="structure-default">Default SQL (opsional)</label>
-                    <input id="structure-default" type="text" placeholder="mis. 'draft' atau CURRENT_TIMESTAMP">
-                </div>
-                <div class="field">
-                    <label for="structure-migration-name">Nama draft migration</label>
-                    <input id="structure-migration-name" type="text" maxlength="120" required placeholder="mis. Tambah kolom status">
-                </div>
-                <button type="submit" class="btn btn-primary">Buat Draft Migration</button>
-            </form>
-            <pre id="structure-sql-preview" class="structure-sql-preview">Pilih tabel untuk menyusun perubahan struktur.</pre>
-        </section>
-    </div>
 </section>
 
 <section id="workspace-migrations" class="workspace-panel" hidden>

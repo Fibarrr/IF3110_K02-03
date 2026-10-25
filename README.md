@@ -27,16 +27,58 @@ Saat pertama kali jalan, backend membuat tabel Access Control dan akun Platform 
 
 Health check: `GET http://localhost:8080/health`.
 
-## Tes integrasi PostgreSQL
+## Menjalankan frontend
 
-Pastikan PostgreSQL dari Compose sedang berjalan. Dari folder `backend`, isi `TEST_DATABASE_URL` dengan kredensial dan port yang sama seperti `.env`, lalu jalankan:
+Frontend memakai Go templates dan file CSS/JavaScript yang disajikan langsung oleh backend. Tidak perlu menjalankan server frontend terpisah atau memasang dependency Node.js.
+
+1. Pastikan PostgreSQL dari Docker Compose berjalan.
+2. Jalankan backend mengikuti bagian **Menjalankan backend** dan biarkan prosesnya tetap hidup.
+3. Buka `http://localhost:8080/login` di browser. Setelah login, aplikasi akan membuka halaman daftar database.
+
+Halaman admin tersedia di `http://localhost:8080/admin` dan hanya dapat dibuka oleh Platform Admin. Pengguna lain akan tetap di halaman tersebut dan melihat pesan akses khusus admin.
+
+## Automated testing
+
+Jalankan seluruh unit test dari folder `backend`:
+
+```powershell
+go test ./...
+```
+
+Untuk menjalankan juga tes integrasi PostgreSQL, pastikan PostgreSQL dari Compose sedang berjalan. Dari folder `backend`, isi `TEST_DATABASE_URL` dengan kredensial dan port yang sama seperti `.env`:
 
 ```powershell
 $env:TEST_DATABASE_URL = "postgres://platform:platform_dev_password@127.0.0.1:5432/platform_dev?sslmode=disable"
-go test ./internal/accesscontrol -run TestPostgresAccessControlFlow -v
+go test ./... -run 'TestPostgres' -v
 ```
 
-Ganti port `5432` pada URL jika `POSTGRES_PORT` di `.env` berbeda. Tes ini membuat schema sementara bernama `ac_test_...` dan menghapusnya setelah selesai; gunakan database development lokal.
+Ganti port `5432` jika `POSTGRES_PORT` di `.env` berbeda. Tes integrasi membuat schema sementara (`ac_test_...`, `dm_test_...`, dan `mg_test_...`) lalu menghapusnya setelah selesai. Gunakan database development lokal. Pesan `no tests to run` pada paket tanpa test bernama `TestPostgres` adalah normal; jalankan `go test ./...` untuk seluruh test.
+
+## Testing Flow
+
+Gunakan database target sementara yang berisi tabel dan data contoh. Jangan jalankan perubahan migration pada database yang menyimpan data penting.
+
+1. Login sebagai Platform Admin, daftarkan koneksi PostgreSQL target, lalu gunakan **Uji Koneksi**.
+2. Buat pengguna biasa dan grup. Tambahkan pengguna sebagai anggota grup, lalu berikan akses **View Only** ke database target.
+3. Login sebagai pengguna biasa. Buka database dan periksa schema, tabel, kolom, constraint, index, serta data. Schema Visualizer dapat digunakan untuk melihat relasi Foreign Key.
+4. Buka `/admin` sebagai pengguna biasa dan pastikan halaman menampilkan peringatan bahwa akses hanya untuk Platform Admin. Di Migration Editor, akses **View Only** hanya dapat melihat riwayat dan detail migration.
+5. Sebagai admin, ubah akses grup menjadi **View + Edit**. Muat ulang halaman database pengguna biasa, buat draft migration, lalu simpan dan jalankan. Contoh perubahan sederhana:
+
+   ```sql
+   ALTER TABLE public.customers ADD COLUMN test_note TEXT;
+   ```
+
+   Periksa bahwa kolom muncul di viewer dan migration tercatat sukses di riwayat.
+
+6. Uji rollback dengan migration yang melakukan perubahan lalu gagal:
+
+   ```sql
+   CREATE TABLE public.rollback_probe (id INT PRIMARY KEY);
+   SELECT no_such_migration_function();
+   ```
+
+   Pastikan migration berstatus gagal dan tabel `rollback_probe` tidak terbentuk. Migration gagal menahan versi berikutnya; perbaiki draft yang sama, misalnya menjadi `SELECT 1;`, simpan, lalu jalankan agar urutan migration tidak tertahan.
+7. Sebagai admin, cabut akses grup atau keluarkan pengguna dari grup. Muat ulang halaman sebagai pengguna tersebut dan pastikan ia tidak dapat membuka database lagi.
 
 ## API Access Control
 
@@ -66,7 +108,7 @@ Nilai sesi saat ini: idle timeout 30 menit, masa berlaku maksimum 12 jam, rotasi
 
 ## Database Management
 
-Halaman database menyediakan **Schema Visualizer** untuk melihat kolom dan relasi Foreign Key, **Schema & Table Viewer** untuk melihat kolom, constraint, index, dan data tabel, serta **Table Editor** untuk menambah, mengubah, dan menghapus baris. Pengubahan dan penghapusan baris membutuhkan primary key dan akses `view_edit`. Editor struktur menyusun perubahan kolom sebagai draft Migration; SQL tetap perlu ditinjau dan dijalankan lewat **Migration Editor**.
+Halaman database menyediakan **Schema Visualizer** untuk melihat tabel dan relasi Foreign Key, **Schema & Table Viewer** untuk melihat kolom, constraint, index, dan data tabel secara read-only, serta **Migration Editor** untuk mengelola draft dan menjalankan migration.
 
 ## Migration
 

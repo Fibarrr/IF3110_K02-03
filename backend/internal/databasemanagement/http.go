@@ -26,12 +26,6 @@ type SchemaViewer interface {
 	GetTableRows(ctx context.Context, databaseID, schemaName, tableName string, limit, offset int) (TableRowsPage, error)
 }
 
-type TableEditor interface {
-	InsertTableRow(ctx context.Context, databaseID, schemaName, tableName string, values map[string]json.RawMessage) error
-	UpdateTableRow(ctx context.Context, databaseID, schemaName, tableName string, key, values map[string]json.RawMessage) error
-	DeleteTableRow(ctx context.Context, databaseID, schemaName, tableName string, key map[string]json.RawMessage) error
-}
-
 type AuthGuard interface {
 	RequireUser(next http.Handler) http.Handler
 	RequirePlatformAdmin(next http.Handler) http.Handler
@@ -54,7 +48,6 @@ type HTTPHandler struct {
 	http.Handler
 	store  CatalogStore
 	viewer SchemaViewer
-	editor TableEditor
 	auth   AuthGuard
 	access AccessResolver
 }
@@ -63,7 +56,6 @@ func NewHTTPHandler(store CatalogStore, viewer SchemaViewer, auth AuthGuard, acc
 	h := &HTTPHandler{
 		store:  store,
 		viewer: viewer,
-		editor: func() TableEditor { editor, _ := viewer.(TableEditor); return editor }(),
 		auth:   auth,
 		access: access,
 	}
@@ -87,9 +79,6 @@ func (h *HTTPHandler) RegisterRoutes(mux *http.ServeMux) {
 	dbView := func(handler http.HandlerFunc) http.Handler {
 		return h.auth.RequireDatabaseAccess(dbIDFromPath, accesscontrol.AccessViewOnly, handler)
 	}
-	dbEdit := func(handler http.HandlerFunc) http.Handler {
-		return h.auth.RequireDatabaseAccess(dbIDFromPath, accesscontrol.AccessViewEdit, h.auth.RequireCSRF(handler))
-	}
 
 	mux.Handle("GET /api/admin/databases", adminRead(h.listAdminDatabases))
 	mux.Handle("POST /api/admin/databases", adminMutate(h.createDatabase))
@@ -103,9 +92,6 @@ func (h *HTTPHandler) RegisterRoutes(mux *http.ServeMux) {
 	mux.Handle("GET /api/databases/{databaseID}/schemas", dbView(h.listSchemas))
 	mux.Handle("GET /api/databases/{databaseID}/schemas/{schemaName}/tables/{tableName}", dbView(h.getTableDetails))
 	mux.Handle("GET /api/databases/{databaseID}/schemas/{schemaName}/tables/{tableName}/rows", dbView(h.getTableRows))
-	mux.Handle("POST /api/databases/{databaseID}/schemas/{schemaName}/tables/{tableName}/rows", dbEdit(h.insertTableRow))
-	mux.Handle("PUT /api/databases/{databaseID}/schemas/{schemaName}/tables/{tableName}/rows", dbEdit(h.updateTableRow))
-	mux.Handle("DELETE /api/databases/{databaseID}/schemas/{schemaName}/tables/{tableName}/rows", dbEdit(h.deleteTableRow))
 }
 
 func (h *HTTPHandler) listAdminDatabases(w http.ResponseWriter, r *http.Request) {
@@ -293,59 +279,6 @@ func (h *HTTPHandler) getTableRows(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, page)
-}
-
-type rowWriteInput struct {
-	Key    map[string]json.RawMessage `json:"key"`
-	Values map[string]json.RawMessage `json:"values"`
-}
-
-func (h *HTTPHandler) insertTableRow(w http.ResponseWriter, r *http.Request) {
-	if h.editor == nil {
-		writeError(w, http.StatusNotImplemented, "editor tabel belum tersedia")
-		return
-	}
-	var input rowWriteInput
-	if !decodeJSON(w, r, &input) {
-		return
-	}
-	if err := h.editor.InsertTableRow(r.Context(), r.PathValue("databaseID"), r.PathValue("schemaName"), r.PathValue("tableName"), input.Values); err != nil {
-		writeStoreError(w, err)
-		return
-	}
-	w.WriteHeader(http.StatusNoContent)
-}
-
-func (h *HTTPHandler) updateTableRow(w http.ResponseWriter, r *http.Request) {
-	if h.editor == nil {
-		writeError(w, http.StatusNotImplemented, "editor tabel belum tersedia")
-		return
-	}
-	var input rowWriteInput
-	if !decodeJSON(w, r, &input) {
-		return
-	}
-	if err := h.editor.UpdateTableRow(r.Context(), r.PathValue("databaseID"), r.PathValue("schemaName"), r.PathValue("tableName"), input.Key, input.Values); err != nil {
-		writeStoreError(w, err)
-		return
-	}
-	w.WriteHeader(http.StatusNoContent)
-}
-
-func (h *HTTPHandler) deleteTableRow(w http.ResponseWriter, r *http.Request) {
-	if h.editor == nil {
-		writeError(w, http.StatusNotImplemented, "editor tabel belum tersedia")
-		return
-	}
-	var input rowWriteInput
-	if !decodeJSON(w, r, &input) {
-		return
-	}
-	if err := h.editor.DeleteTableRow(r.Context(), r.PathValue("databaseID"), r.PathValue("schemaName"), r.PathValue("tableName"), input.Key); err != nil {
-		writeStoreError(w, err)
-		return
-	}
-	w.WriteHeader(http.StatusNoContent)
 }
 
 func (h *HTTPHandler) currentUser(r *http.Request) (accesscontrol.User, bool) {

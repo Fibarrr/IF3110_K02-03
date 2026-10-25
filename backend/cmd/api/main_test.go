@@ -17,7 +17,7 @@ func TestBuildServerMuxRoutesAPIAndWeb(t *testing.T) {
 	dmHandler.RegisterRoutes(apiMux)
 	apiMux.Handle("/api/", acHandler)
 
-	mux, err := buildServerMux(apiMux)
+	mux, err := buildServerMux(apiMux, acHandler)
 	if err != nil {
 		t.Fatalf("buildServerMux() gagal: %v", err)
 	}
@@ -31,7 +31,7 @@ func TestBuildServerMuxRoutesAPIAndWeb(t *testing.T) {
 		{method: http.MethodGet, path: "/login", wantStatus: http.StatusOK},
 		{method: http.MethodGet, path: "/", wantStatus: http.StatusOK},
 		{method: http.MethodGet, path: "/databases/orders-db", wantStatus: http.StatusOK},
-		{method: http.MethodGet, path: "/admin", wantStatus: http.StatusOK},
+		{method: http.MethodGet, path: "/admin", wantStatus: http.StatusUnauthorized},
 		{method: http.MethodGet, path: "/static/styles.css", wantStatus: http.StatusOK},
 		{method: http.MethodGet, path: "/api/admin/users", wantStatus: http.StatusUnauthorized},
 		{method: http.MethodGet, path: "/api/admin/databases", wantStatus: http.StatusUnauthorized},

@@ -44,9 +44,9 @@ func TestWebHandlerRendersTemplatesAndStaticAssets(t *testing.T) {
 		{
 			name:        "admin console page",
 			path:        "/admin",
-			wantStatus:  http.StatusOK,
-			wantType:    "text/html",
-			wantSnippet: "Koneksi Database PostgreSQL",
+			wantStatus:  http.StatusServiceUnavailable,
+			wantType:    "text/plain",
+			wantSnippet: "akses admin belum dikonfigurasi",
 		},
 		{
 			name:        "stylesheet asset",

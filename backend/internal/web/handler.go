@@ -7,6 +7,8 @@ import (
 	"io/fs"
 	"net/http"
 	"strings"
+
+	"github.com/Fibarrr/IF3110_K02-03/backend/internal/accesscontrol"
 )
 
 //go:embed templates/*.html static/*
@@ -23,9 +25,14 @@ type Handler struct {
 	pages map[string]*template.Template
 }
 
-func NewHandler() (*Handler, error) {
+// AdminPageAuth provides the same session and role checks used by admin APIs.
+type AdminPageAuth interface {
+	RequireUser(next http.Handler) http.Handler
+}
+
+func NewHandler(adminAuth ...AdminPageAuth) (*Handler, error) {
 	pages := make(map[string]*template.Template)
-	for _, name := range []string{"login.html", "workspace.html", "database.html", "admin.html"} {
+	for _, name := range []string{"login.html", "workspace.html", "database.html", "admin.html", "admin_forbidden.html"} {
 		tmpl, err := template.ParseFS(content, "templates/layout.html", "templates/"+name)
 		if err != nil {
 			return nil, err
@@ -40,18 +47,37 @@ func NewHandler() (*Handler, error) {
 
 	h := &Handler{pages: pages}
 	mux := http.NewServeMux()
-	h.RegisterRoutes(mux, staticFS)
+	h.RegisterRoutes(mux, staticFS, adminAuth...)
 	h.Handler = mux
 	return h, nil
 }
 
-func (h *Handler) RegisterRoutes(mux *http.ServeMux, staticFS fs.FS) {
+func (h *Handler) RegisterRoutes(mux *http.ServeMux, staticFS fs.FS, adminAuth ...AdminPageAuth) {
 	if staticFS == nil {
 		staticFS, _ = fs.Sub(content, "static")
 	}
 	mux.Handle("GET /static/", http.StripPrefix("/static/", http.FileServer(http.FS(staticFS))))
 	mux.HandleFunc("GET /login", h.renderLogin)
-	mux.HandleFunc("GET /admin", h.renderAdmin)
+	var adminRoute http.Handler
+	if len(adminAuth) > 0 && adminAuth[0] != nil {
+		adminRoute = adminAuth[0].RequireUser(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			user, ok := accesscontrol.UserFromContext(r.Context())
+			if !ok {
+				http.Error(w, "perlu login", http.StatusUnauthorized)
+				return
+			}
+			if !user.PlatformAdmin {
+				h.renderAdminForbidden(w, r)
+				return
+			}
+			h.renderAdmin(w, r)
+		}))
+	} else {
+		adminRoute = http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			http.Error(w, "akses admin belum dikonfigurasi", http.StatusServiceUnavailable)
+		})
+	}
+	mux.Handle("GET /admin", adminRoute)
 	mux.HandleFunc("GET /databases/{databaseID}", h.renderDatabase)
 	mux.HandleFunc("GET /{$}", h.renderWorkspace)
 }
@@ -86,7 +112,18 @@ func (h *Handler) renderAdmin(w http.ResponseWriter, _ *http.Request) {
 	})
 }
 
+func (h *Handler) renderAdminForbidden(w http.ResponseWriter, _ *http.Request) {
+	h.renderStatus(w, http.StatusForbidden, "admin_forbidden.html", pageData{
+		Title: "Akses Ditolak â€” Platform Manajemen Database",
+		Page:  "admin-forbidden",
+	})
+}
+
 func (h *Handler) render(w http.ResponseWriter, name string, data pageData) {
+	h.renderStatus(w, http.StatusOK, name, data)
+}
+
+func (h *Handler) renderStatus(w http.ResponseWriter, status int, name string, data pageData) {
 	tmpl, ok := h.pages[name]
 	if !ok {
 		http.Error(w, "halaman tidak ditemukan", http.StatusNotFound)
@@ -98,6 +135,6 @@ func (h *Handler) render(w http.ResponseWriter, name string, data pageData) {
 		return
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.WriteHeader(http.StatusOK)
+	w.WriteHeader(status)
 	_, _ = w.Write(buf.Bytes())
 }

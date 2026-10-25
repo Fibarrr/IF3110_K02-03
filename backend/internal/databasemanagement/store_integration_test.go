@@ -5,8 +5,6 @@ import (
 	"crypto/rand"
 	"database/sql"
 	"encoding/hex"
-	"encoding/json"
-	"errors"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -166,35 +164,6 @@ func TestPostgresDatabaseManagementIntegration(t *testing.T) {
 	rowsPage, err := viewer.GetTableRows(ctx, connID, schemaName, "sample_items", 10, 0)
 	if err != nil || rowsPage.TotalRows != 1 || len(rowsPage.Rows) != 1 || rowsPage.Rows[0]["ratio"] != "NaN" {
 		t.Fatalf("GetTableRows gagal: page=%#v err=%v", rowsPage, err)
-	}
-
-	// Table Editor should insert, update and delete only using validated columns and primary keys.
-	if err := viewer.InsertTableRow(ctx, connID, schemaName, "sample_items", map[string]json.RawMessage{
-		"label": json.RawMessage(`"item-b"`),
-		"ratio": json.RawMessage(`1.25`),
-	}); err != nil {
-		t.Fatalf("InsertTableRow gagal: %v", err)
-	}
-	var insertedID int64
-	if err := db.QueryRowContext(ctx, `SELECT id FROM sample_items WHERE label='item-b'`).Scan(&insertedID); err != nil {
-		t.Fatal(err)
-	}
-	idJSON, _ := json.Marshal(insertedID)
-	if err := viewer.UpdateTableRow(ctx, connID, schemaName, "sample_items", map[string]json.RawMessage{"id": idJSON}, map[string]json.RawMessage{"label": json.RawMessage(`"item-b-updated"`)}); err != nil {
-		t.Fatalf("UpdateTableRow gagal: %v", err)
-	}
-	var updatedLabel string
-	if err := db.QueryRowContext(ctx, `SELECT label FROM sample_items WHERE id=$1`, insertedID).Scan(&updatedLabel); err != nil || updatedLabel != "item-b-updated" {
-		t.Fatalf("label setelah update = %q, err=%v", updatedLabel, err)
-	}
-	if err := viewer.DeleteTableRow(ctx, connID, schemaName, "sample_items", map[string]json.RawMessage{"id": idJSON}); err != nil {
-		t.Fatalf("DeleteTableRow gagal: %v", err)
-	}
-	if err := viewer.DeleteTableRow(ctx, connID, schemaName, "sample_links", map[string]json.RawMessage{}); !errors.As(err, new(InputError)) {
-		t.Fatalf("hapus tabel tanpa PK seharusnya ditolak, dapat %v", err)
-	}
-	if err := viewer.InsertTableRow(ctx, connID, schemaName, "sample_items", map[string]json.RawMessage{"missing; DROP TABLE sample_items; --": json.RawMessage(`"x"`)}); !errors.As(err, new(InputError)) {
-		t.Fatalf("nama kolom tidak valid seharusnya ditolak, dapat %v", err)
 	}
 
 	// Verify that DeleteConnection atomically removes grants in PostgreSQL
