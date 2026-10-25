@@ -216,11 +216,27 @@ func (m *memoryCatalogStore) DeleteConnection(_ context.Context, databaseID stri
 }
 
 type stubSchemaViewer struct {
-	store     *memoryCatalogStore
-	failByID  map[string]error
-	schemas   map[string][]SchemaSummary
-	details   map[string]TableDetails
-	rowsPages map[string]TableRowsPage
+	store       *memoryCatalogStore
+	failByID    map[string]error
+	schemas     map[string][]SchemaSummary
+	details     map[string]TableDetails
+	rowsPages   map[string]TableRowsPage
+	editorCalls []string
+}
+
+func (v *stubSchemaViewer) InsertTableRow(_ context.Context, _, _, _ string, _ map[string]json.RawMessage) error {
+	v.editorCalls = append(v.editorCalls, "insert")
+	return nil
+}
+
+func (v *stubSchemaViewer) UpdateTableRow(_ context.Context, _, _, _ string, _, _ map[string]json.RawMessage) error {
+	v.editorCalls = append(v.editorCalls, "update")
+	return nil
+}
+
+func (v *stubSchemaViewer) DeleteTableRow(_ context.Context, _, _, _ string, _ map[string]json.RawMessage) error {
+	v.editorCalls = append(v.editorCalls, "delete")
+	return nil
 }
 
 func (v *stubSchemaViewer) PingConnection(_ context.Context, databaseID string) (ConnectionStatus, error) {
@@ -557,6 +573,34 @@ func TestHTTPDatabaseManagementFlows(t *testing.T) {
 	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"NaN"`) || !strings.Contains(rec.Body.String(), `"Infinity"`) {
 		t.Fatalf("viewer GET table rows gagal mengenkode float non-finite: code=%d body=%s", rec.Code, rec.Body.String())
 	}
+
+	// Row writes require view_edit plus a valid CSRF token; view_only must be denied.
+	editRowsURL := "/api/databases/orders-db/schemas/public/tables/customers/rows"
+	req = httptest.NewRequest(http.MethodPost, editRowsURL, strings.NewReader(`{"values":{"email":"new@example.com"}}`))
+	req.AddCookie(&http.Cookie{Name: "if3110_session", Value: "tok-viewer"})
+	req.Header.Set("X-CSRF-Token", "csrf-viewer")
+	rec = httptest.NewRecorder()
+	h.handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("POST baris dengan view_only status = %d, mau 403", rec.Code)
+	}
+	h.grants[2]["orders-db"] = accesscontrol.AccessViewEdit
+	req = httptest.NewRequest(http.MethodPost, editRowsURL, strings.NewReader(`{"values":{"email":"new@example.com"}}`))
+	req.AddCookie(&http.Cookie{Name: "if3110_session", Value: "tok-viewer"})
+	rec = httptest.NewRecorder()
+	h.handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("POST baris tanpa CSRF status = %d, mau 403", rec.Code)
+	}
+	req = httptest.NewRequest(http.MethodPost, editRowsURL, strings.NewReader(`{"values":{"email":"new@example.com"}}`))
+	req.AddCookie(&http.Cookie{Name: "if3110_session", Value: "tok-viewer"})
+	req.Header.Set("X-CSRF-Token", "csrf-viewer")
+	rec = httptest.NewRecorder()
+	h.handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusNoContent || len(h.viewer.editorCalls) != 1 || h.viewer.editorCalls[0] != "insert" {
+		t.Fatalf("POST baris dengan view_edit dan CSRF: status=%d calls=%v body=%s", rec.Code, h.viewer.editorCalls, rec.Body.String())
+	}
+	h.grants[2]["orders-db"] = accesscontrol.AccessViewOnly
 
 	// 9. Missing table returns 404 Not Found
 	req = httptest.NewRequest(http.MethodGet, "/api/databases/orders-db/schemas/public/tables/missing_table", nil)

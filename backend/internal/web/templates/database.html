@@ -14,6 +14,36 @@
     </div>
 </section>
 
+<div class="workspace-tabs" role="tablist" aria-label="Database tools">
+    <button type="button" class="workspace-tab-btn" data-workspace-tab="visualizer">Schema Visualizer</button>
+    <button type="button" class="workspace-tab-btn active" data-workspace-tab="explorer">Schema &amp; Table Viewer</button>
+    <button type="button" class="workspace-tab-btn" data-workspace-tab="table-editor">Table Editor</button>
+    <button type="button" class="workspace-tab-btn" data-workspace-tab="migrations">Migration Editor</button>
+</div>
+
+<section id="workspace-visualizer" class="workspace-panel" hidden>
+    <div class="card visualizer-card">
+        <div class="section-title-row">
+            <div>
+                <h2>Diagram Relasi Tabel</h2>
+                <p class="muted">Menampilkan kolom dan relasi Foreign Key pada schema yang bisa Anda akses.</p>
+            </div>
+            <div class="visualizer-controls">
+                <input id="visualizer-filter-input" type="search" placeholder="Cari tabel..." aria-label="Cari tabel di diagram">
+                <button type="button" id="visualizer-reload-btn" class="btn btn-outline">Muat Ulang</button>
+            </div>
+        </div>
+        <div id="schema-graph-status" class="muted">Pilih tab ini untuk memuat diagram.</div>
+        <div id="schema-graph-viewport" class="schema-graph-viewport" hidden>
+            <div id="schema-graph-canvas" class="schema-graph-canvas">
+                <svg id="schema-graph-edges" class="schema-graph-edges" aria-hidden="true"></svg>
+                <div id="schema-graph-nodes" class="schema-graph-nodes"></div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<section id="workspace-explorer" class="workspace-panel">
 <section class="explorer-layout">
     <aside class="card explorer-sidebar">
         <div class="sidebar-header">
@@ -124,5 +154,132 @@
             </div>
         </div>
     </section>
+</section>
+</section>
+
+<section id="workspace-table-editor" class="workspace-panel" hidden>
+    <div class="table-editor-layout">
+        <section class="card">
+            <div class="section-title-row">
+                <div>
+                    <h2 id="table-editor-title">Pilih tabel di Schema &amp; Table Viewer</h2>
+                    <p class="muted">Tambah, ubah, atau hapus baris. Edit dan hapus membutuhkan primary key.</p>
+                </div>
+                <button type="button" id="table-row-add-btn" class="btn btn-primary" hidden>Tambah Baris</button>
+            </div>
+            <form id="table-row-form" class="table-row-form" hidden>
+                <div id="table-row-fields" class="form-grid"></div>
+                <div class="header-actions">
+                    <button type="button" id="table-row-cancel-btn" class="btn btn-outline">Batal</button>
+                    <button type="submit" id="table-row-save-btn" class="btn btn-primary">Simpan Baris</button>
+                </div>
+            </form>
+            <div class="table-scroll">
+                <table class="data-table">
+                    <thead id="editor-rows-thead"><tr><th>Pilih tabel terlebih dahulu.</th></tr></thead>
+                    <tbody id="editor-rows-tbody"><tr><td class="muted">Pilih tabel di Schema &amp; Table Viewer.</td></tr></tbody>
+                </table>
+            </div>
+        </section>
+
+        <section class="card">
+            <div class="section-title-row">
+                <div>
+                    <h2>Edit Struktur Tabel</h2>
+                    <p class="muted">Perubahan struktur disimpan sebagai draft migration agar bisa ditinjau sebelum dijalankan.</p>
+                </div>
+            </div>
+            <form id="structure-editor-form" class="form-stack">
+                <div class="field">
+                    <label for="structure-operation">Operasi</label>
+                    <select id="structure-operation">
+                        <option value="add-column">Tambah kolom</option>
+                        <option value="rename-column">Ubah nama kolom</option>
+                        <option value="drop-column">Hapus kolom</option>
+                    </select>
+                </div>
+                <div class="field" id="structure-current-column-field">
+                    <label for="structure-current-column">Kolom saat ini</label>
+                    <select id="structure-current-column"></select>
+                </div>
+                <div class="field" id="structure-new-column-field">
+                    <label for="structure-new-column">Nama kolom baru</label>
+                    <input id="structure-new-column" type="text" placeholder="mis. status">
+                </div>
+                <div class="field" id="structure-data-type-field">
+                    <label for="structure-data-type">Tipe data PostgreSQL</label>
+                    <input id="structure-data-type" type="text" placeholder="mis. VARCHAR(100), INTEGER, TIMESTAMPTZ">
+                </div>
+                <label class="checkbox-label" id="structure-nullable-field"><input id="structure-nullable" type="checkbox" checked> Izinkan NULL</label>
+                <div class="field" id="structure-default-field">
+                    <label for="structure-default">Default SQL (opsional)</label>
+                    <input id="structure-default" type="text" placeholder="mis. 'draft' atau CURRENT_TIMESTAMP">
+                </div>
+                <div class="field">
+                    <label for="structure-migration-name">Nama draft migration</label>
+                    <input id="structure-migration-name" type="text" maxlength="120" required placeholder="mis. Tambah kolom status">
+                </div>
+                <button type="submit" class="btn btn-primary">Buat Draft Migration</button>
+            </form>
+            <pre id="structure-sql-preview" class="structure-sql-preview">Pilih tabel untuk menyusun perubahan struktur.</pre>
+        </section>
+    </div>
+</section>
+
+<section id="workspace-migrations" class="workspace-panel" hidden>
+    <div class="migration-layout">
+        <section class="card migration-editor-card">
+            <div class="section-title-row">
+                <div>
+                    <h2 id="migration-editor-title">Migration baru</h2>
+                    <p id="migration-editor-hint" class="muted">Tulis SQL, simpan sebagai draft, lalu jalankan setelah diperiksa.</p>
+                </div>
+                <span id="migration-editor-status" class="badge badge-neutral">Draft baru</span>
+            </div>
+
+            <form id="migration-form" class="form-stack">
+                <div class="field">
+                    <label for="migration-name">Nama migration</label>
+                    <input id="migration-name" type="text" maxlength="120" required placeholder="mis. Tambah kolom status">
+                </div>
+                <div class="field">
+                    <label for="migration-sql">SQL</label>
+                    <textarea id="migration-sql" class="sql-editor" rows="18" maxlength="262144" required spellcheck="false" placeholder="ALTER TABLE ...;"></textarea>
+                    <span class="muted">Maksimal 256 KiB. SQL dijalankan dalam transaksi dan gagal jika lebih dari 2 menit.</span>
+                </div>
+                <div class="header-actions migration-actions">
+                    <button type="button" id="new-migration-btn" class="btn btn-outline">Draft Baru</button>
+                    <button type="submit" id="save-migration-btn" class="btn btn-primary">Simpan Draft</button>
+                    <button type="button" id="run-migration-btn" class="btn btn-danger" disabled>Jalankan Migration</button>
+                </div>
+            </form>
+            <p id="migration-access-hint" class="muted"></p>
+        </section>
+
+        <section class="card migration-history-card">
+            <div class="section-title-row">
+                <div>
+                    <h2>Riwayat Migration</h2>
+                    <p class="muted">Versi dijalankan berurutan. Versi berikutnya menunggu versi sebelumnya sukses.</p>
+                </div>
+                <button type="button" id="refresh-migrations-btn" class="btn btn-outline btn-sm">Muat Ulang</button>
+            </div>
+            <div class="table-scroll">
+                <table class="data-table migration-history-table">
+                    <thead>
+                        <tr>
+                            <th>Versi</th>
+                            <th>Migration</th>
+                            <th>Status</th>
+                            <th>Waktu</th>
+                        </tr>
+                    </thead>
+                    <tbody id="migration-history-tbody">
+                        <tr><td colspan="4" class="muted">Memuat riwayat...</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </section>
+    </div>
 </section>
 {{end}}

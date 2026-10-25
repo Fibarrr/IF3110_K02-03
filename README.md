@@ -64,9 +64,13 @@ Jangan kirim ID sesi lewat URL atau simpan di local storage.
 
 Nilai sesi saat ini: idle timeout 30 menit, masa berlaku maksimum 12 jam, rotasi setiap 15 menit, dan grace period token lama 30 detik. Rotasi tidak memperpanjang masa berlaku maksimum.
 
+## Database Management
+
+Halaman database menyediakan **Schema Visualizer** untuk melihat kolom dan relasi Foreign Key, **Schema & Table Viewer** untuk melihat kolom, constraint, index, dan data tabel, serta **Table Editor** untuk menambah, mengubah, dan menghapus baris. Pengubahan dan penghapusan baris membutuhkan primary key dan akses `view_edit`. Editor struktur menyusun perubahan kolom sebagai draft Migration; SQL tetap perlu ditinjau dan dijalankan lewat **Migration Editor**.
+
 ## Migration
 
-Migration disimpan sebagai draft dan riwayat di database platform, lalu SQL dijalankan ke database target. Migration diberi versi berurutan per database; versi berikutnya menunggu versi sebelumnya sukses. Eksekusi memakai transaksi PostgreSQL, maksimal 256 KiB per SQL dan 2 menit per eksekusi. Lihat aturan dan format API di `backend/internal/migration/POLICY.md`.
+Migration disimpan sebagai draft dan riwayat di database platform, lalu SQL dijalankan ke database target. Migration diberi versi berurutan per database; versi berikutnya menunggu versi sebelumnya sukses. Eksekusi memakai transaksi PostgreSQL, maksimal 256 KiB per SQL dan 2 menit per eksekusi. UI Migration tersedia pada tab **Migration Editor** di `/databases/{databaseID}`. Lihat aturan dan format API di `backend/internal/migration/POLICY.md`.
 
 - `GET /api/databases/{databaseID}/migrations` dan `GET /api/databases/{databaseID}/migrations/{migrationID}` untuk melihat SQL dan riwayat (perlu `view_only`).
 - `POST /api/databases/{databaseID}/migrations` untuk membuat draft.

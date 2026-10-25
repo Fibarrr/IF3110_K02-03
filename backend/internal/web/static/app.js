@@ -217,11 +217,17 @@
         if (!user) return;
 
         let cachedSchemas = [];
+        let graphDetails = [];
+        let graphLoadPromise = null;
         let selectedSchema = "";
         let selectedTable = "";
+        let selectedTableDetails = null;
         let currentOffset = 0;
         let tableLoadSeq = 0;
         let rowsLoadSeq = 0;
+        let migrationCanEdit = false;
+        let migrationList = [];
+        let selectedMigrationId = null;
 
         const titleEl = document.getElementById("db-header-title");
         const metaEl = document.getElementById("db-header-meta");
@@ -229,6 +235,330 @@
         const connBadge = document.getElementById("db-conn-badge");
         const schemaTree = document.getElementById("schema-tree");
         const filterInput = document.getElementById("schema-filter-input");
+
+        const workspaceTabButtons = document.querySelectorAll(".workspace-tab-btn");
+        workspaceTabButtons.forEach(function (btn) {
+            btn.addEventListener("click", function () {
+                const target = btn.getAttribute("data-workspace-tab");
+                workspaceTabButtons.forEach(function (item) { item.classList.toggle("active", item === btn); });
+                document.querySelectorAll(".workspace-panel").forEach(function (panel) {
+                    panel.hidden = panel.id !== "workspace-" + target;
+                });
+                if (target === "migrations") loadMigrationHistory();
+                if (target === "visualizer") loadSchemaGraph();
+                if (target === "table-editor") {
+                    if (selectedSchema && selectedTable) loadTableRows(selectedSchema, selectedTable);
+                    updateTableEditorControls();
+                }
+            });
+        });
+
+        const graphFilter = document.getElementById("visualizer-filter-input");
+        const graphReload = document.getElementById("visualizer-reload-btn");
+        const graphNodes = document.getElementById("schema-graph-nodes");
+        const graphViewport = document.getElementById("schema-graph-viewport");
+        const graphStatus = document.getElementById("schema-graph-status");
+
+        function drawSchemaGraphEdges() {
+            const svg = document.getElementById("schema-graph-edges");
+            const canvas = document.getElementById("schema-graph-canvas");
+            if (!svg || !canvas || !graphNodes) return;
+            const width = canvas.scrollWidth;
+            const height = canvas.scrollHeight;
+            svg.setAttribute("width", width);
+            svg.setAttribute("height", height);
+            svg.setAttribute("viewBox", "0 0 " + width + " " + height);
+            const positions = new Map();
+            graphNodes.querySelectorAll(".schema-graph-node").forEach(function (node) {
+                const key = node.getAttribute("data-key");
+                const box = node.getBoundingClientRect();
+                const root = canvas.getBoundingClientRect();
+                positions.set(key, {
+                    left: box.left - root.left,
+                    right: box.right - root.left,
+                    top: box.top - root.top,
+                    bottom: box.bottom - root.top,
+                    centerX: box.left - root.left + box.width / 2,
+                    centerY: box.top - root.top + box.height / 2
+                });
+            });
+            const paths = [];
+            graphDetails.forEach(function (table) {
+                const fromKey = table.schema + "." + table.name;
+                const from = positions.get(fromKey);
+                if (!from) return;
+                (table.constraints || []).filter(function (con) {
+                    return con.type === "FOREIGN KEY" && con.referencedTable;
+                }).forEach(function (con) {
+                    const to = positions.get((con.referencedSchema || table.schema) + "." + con.referencedTable);
+                    if (!to) return;
+                    const dx = to.centerX - from.centerX;
+                    const dy = to.centerY - from.centerY;
+                    if (Math.abs(dy) > Math.abs(dx)) {
+                        const down = dy > 0;
+                        const y1 = down ? from.bottom : from.top;
+                        const y2 = down ? to.top : to.bottom;
+                        const bend = Math.max(35, Math.abs(y2 - y1) * 0.45);
+                        const c1 = y1 + (down ? bend : -bend);
+                        const c2 = y2 - (down ? bend : -bend);
+                        paths.push('<path class="schema-graph-edge" d="M ' + from.centerX + ' ' + y1 + ' C ' + from.centerX + ' ' + c1 + ', ' + to.centerX + ' ' + c2 + ', ' + to.centerX + ' ' + y2 + '" marker-end="url(#schema-graph-arrow)"/>');
+                    } else {
+                        const forward = dx > 0;
+                        const x1 = forward ? from.right : from.left;
+                        const x2 = forward ? to.left : to.right;
+                        const bend = Math.max(35, Math.abs(x2 - x1) * 0.45);
+                        const c1 = x1 + (forward ? bend : -bend);
+                        const c2 = x2 - (forward ? bend : -bend);
+                        paths.push('<path class="schema-graph-edge" d="M ' + x1 + ' ' + from.centerY + ' C ' + c1 + ' ' + from.centerY + ', ' + c2 + ' ' + to.centerY + ', ' + x2 + ' ' + to.centerY + '" marker-end="url(#schema-graph-arrow)"/>');
+                    }
+                });
+            });
+            svg.innerHTML = '<defs><marker id="schema-graph-arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#64748b"/></marker></defs>' + paths.join("");
+        }
+
+        function renderSchemaGraph() {
+            if (!graphNodes) return;
+            const query = graphFilter ? graphFilter.value.trim().toLowerCase() : "";
+            const visible = graphDetails.filter(function (table) {
+                return !query || (table.schema + "." + table.name).toLowerCase().includes(query);
+            });
+            const visibleKeys = new Set(visible.map(function (table) { return table.schema + "." + table.name; }));
+            const gridRows = Math.max(1, Math.ceil(Math.sqrt(visible.length)));
+            graphNodes.style.gridTemplateRows = "repeat(" + gridRows + ", auto)";
+            graphNodes.style.gridTemplateColumns = "repeat(" + Math.ceil(visible.length / gridRows) + ", 290px)";
+            graphNodes.style.gridAutoFlow = "column";
+            if (visible.length === 0) {
+                graphNodes.innerHTML = '<div class="muted schema-graph-empty">Tidak ada tabel yang cocok untuk ditampilkan.</div>';
+                drawSchemaGraphEdges();
+                return;
+            }
+            graphNodes.innerHTML = visible.map(function (table) {
+                const key = table.schema + "." + table.name;
+                const columns = table.columns || [];
+                const foreignColumns = new Set();
+                (table.constraints || []).forEach(function (constraint) {
+                    if (constraint.type === "FOREIGN KEY") (constraint.columns || []).forEach(function (column) { foreignColumns.add(column); });
+                });
+                const columnHTML = columns.length ? columns.map(function (column) {
+                    const keyClass = column.isPrimaryKey ? " graph-primary-key" : (foreignColumns.has(column.name) ? " graph-foreign-key" : "");
+                    const keyMark = foreignColumns.has(column.name) && !column.isPrimaryKey ? "↗ " : "";
+                    return '<li class="' + keyClass + '"><span>' + keyMark + escapeHTML(column.name) + '</span><span>' + escapeHTML(column.dataType) + '</span></li>';
+                }).join("") : '<li class="muted">Tidak ada kolom</li>';
+                const references = (table.constraints || []).filter(function (con) {
+                    return con.type === "FOREIGN KEY" && con.referencedTable && visibleKeys.has((con.referencedSchema || table.schema) + "." + con.referencedTable);
+                }).length;
+                return '<article class="schema-graph-node" tabindex="0" role="button" data-key="' + escapeHTML(key) + '" data-schema="' + escapeHTML(table.schema) + '" data-table="' + escapeHTML(table.name) + '">' +
+                    '<header class="schema-graph-node-header"><strong>' + escapeHTML(table.name) + '</strong><span>' + escapeHTML(table.schema) + '</span></header>' +
+                    '<ul class="schema-graph-columns">' + columnHTML + '</ul>' +
+                    (references ? '<div class="schema-graph-node-header"><span>' + references + ' relasi FK</span></div>' : '') + '</article>';
+            }).join("");
+            requestAnimationFrame(drawSchemaGraphEdges);
+            graphNodes.querySelectorAll(".schema-graph-node").forEach(function (node) {
+                function openTable() {
+                    selectedSchema = node.getAttribute("data-schema");
+                    selectedTable = node.getAttribute("data-table");
+                    currentOffset = 0;
+                    document.querySelectorAll(".workspace-tab-btn").forEach(function (tab) {
+                        tab.classList.toggle("active", tab.getAttribute("data-workspace-tab") === "explorer");
+                    });
+                    document.querySelectorAll(".workspace-panel").forEach(function (panel) {
+                        panel.hidden = panel.id !== "workspace-explorer";
+                    });
+                    renderSchemaTree();
+                    loadSelectedTable();
+                }
+                node.addEventListener("click", openTable);
+                node.addEventListener("keydown", function (event) {
+                    if (event.key === "Enter" || event.key === " ") { event.preventDefault(); openTable(); }
+                });
+            });
+        }
+
+        async function loadSchemaGraph(forceReload) {
+            if (!forceReload && graphDetails.length > 0) {
+                if (graphViewport) graphViewport.hidden = false;
+                renderSchemaGraph();
+                return;
+            }
+            if (graphLoadPromise) return graphLoadPromise;
+            if (graphStatus) graphStatus.textContent = "Memuat metadata tabel dan relasi Foreign Key...";
+            graphLoadPromise = (async function () {
+                try {
+                    if (cachedSchemas.length === 0) {
+                        const data = await apiFetch("/api/databases/" + encodeURIComponent(databaseID) + "/schemas");
+                        cachedSchemas = data.schemas || [];
+                    }
+                    const tables = [];
+                    cachedSchemas.forEach(function (schema) {
+                        (schema.tables || []).forEach(function (table) { tables.push({ schema: schema.name, name: table.name }); });
+                    });
+                    const details = new Array(tables.length);
+                    let nextTable = 0;
+                    let loadedTables = 0;
+                    const workers = Array.from({ length: Math.min(4, tables.length) }, async function () {
+                        while (nextTable < tables.length) {
+                            const index = nextTable++;
+                            const table = tables[index];
+                            const path = "/api/databases/" + encodeURIComponent(databaseID) + "/schemas/" + encodeURIComponent(table.schema) + "/tables/" + encodeURIComponent(table.name);
+                            details[index] = await apiFetch(path);
+                            loadedTables++;
+                            if (graphStatus) graphStatus.textContent = "Memuat metadata tabel " + loadedTables + "/" + tables.length + "...";
+                        }
+                    });
+                    await Promise.all(workers);
+                    graphDetails = details;
+                    if (graphStatus) graphStatus.textContent = details.length + " tabel ditampilkan; garis menunjukkan relasi Foreign Key.";
+                    if (graphViewport) graphViewport.hidden = false;
+                    renderSchemaGraph();
+                } catch (err) {
+                    if (graphStatus) graphStatus.textContent = "Gagal memuat visualizer: " + err.message;
+                    if (graphViewport) graphViewport.hidden = true;
+                } finally {
+                    graphLoadPromise = null;
+                }
+            })();
+            return graphLoadPromise;
+        }
+
+        if (graphFilter) graphFilter.addEventListener("input", renderSchemaGraph);
+        if (graphReload) graphReload.addEventListener("click", function () { graphDetails = []; loadSchemaGraph(true); });
+        window.addEventListener("resize", function () { if (graphViewport && !graphViewport.hidden) drawSchemaGraphEdges(); });
+
+        function updateTableEditorControls() {
+            const title = document.getElementById("table-editor-title");
+            const addButton = document.getElementById("table-row-add-btn");
+            if (title) title.textContent = selectedSchema && selectedTable ? selectedSchema + "." + selectedTable : "Pilih tabel di Schema & Table Viewer";
+            if (addButton) addButton.hidden = !(selectedSchema && selectedTable && migrationCanEdit);
+            renderStructureEditor();
+        }
+
+        function quoteSQLIdentifier(value) { return '"' + String(value).replace(/"/g, '""') + '"'; }
+
+        function renderStructureEditor() {
+            const op = document.getElementById("structure-operation");
+            const current = document.getElementById("structure-current-column");
+            const newField = document.getElementById("structure-new-column-field");
+            const typeField = document.getElementById("structure-data-type-field");
+            const nullableField = document.getElementById("structure-nullable-field");
+            const defaultField = document.getElementById("structure-default-field");
+            const currentField = document.getElementById("structure-current-column-field");
+            const preview = document.getElementById("structure-sql-preview");
+            const form = document.getElementById("structure-editor-form");
+            if (!op || !preview || !form) return;
+            const operation = op.value;
+            const previousColumn = current ? current.value : "";
+            if (current) current.innerHTML = (selectedTableDetails && selectedTableDetails.columns || []).map(function (col) {
+                return '<option value="' + escapeHTML(col.name) + '">' + escapeHTML(col.name) + ' (' + escapeHTML(col.dataType) + ')</option>';
+            }).join("");
+            if (current && previousColumn) current.value = previousColumn;
+            if (currentField) currentField.hidden = operation === "add-column";
+            if (newField) newField.hidden = operation === "drop-column";
+            if (typeField) typeField.hidden = operation !== "add-column";
+            if (nullableField) nullableField.hidden = operation !== "add-column";
+            if (defaultField) defaultField.hidden = operation !== "add-column";
+            form.querySelectorAll("input,select,button").forEach(function (el) { el.disabled = !migrationCanEdit || !selectedTable; });
+            if (!selectedTable) { preview.textContent = "Pilih tabel di Schema & Table Viewer."; return; }
+            const table = quoteSQLIdentifier(selectedSchema) + "." + quoteSQLIdentifier(selectedTable);
+            let sql = "";
+            if (operation === "add-column") {
+                const name = document.getElementById("structure-new-column").value.trim();
+                const type = document.getElementById("structure-data-type").value.trim();
+                if (!name || !type) { preview.textContent = "Isi nama kolom dan tipe datanya untuk melihat SQL."; return; }
+                if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name) || !/^[A-Za-z][A-Za-z0-9_ ]*(\(\s*\d+(\s*,\s*\d+)?\s*\))?(\[\])?$/.test(type)) {
+                    preview.textContent = "Nama kolom atau tipe data belum valid."; return;
+                }
+                sql = "ALTER TABLE " + table + " ADD COLUMN " + quoteSQLIdentifier(name) + " " + type;
+                const defaultValue = document.getElementById("structure-default").value.trim();
+                if (defaultValue) sql += " DEFAULT " + defaultValue;
+                if (!document.getElementById("structure-nullable").checked) sql += " NOT NULL";
+                sql += ";";
+            } else if (operation === "rename-column") {
+                const oldName = current ? current.value : "";
+                const newName = document.getElementById("structure-new-column").value.trim();
+                if (!newName || !/^[A-Za-z_][A-Za-z0-9_]*$/.test(newName)) { preview.textContent = "Isi nama baru yang valid."; return; }
+                sql = "ALTER TABLE " + table + " RENAME COLUMN " + quoteSQLIdentifier(oldName) + " TO " + quoteSQLIdentifier(newName) + ";";
+            } else {
+                sql = "ALTER TABLE " + table + " DROP COLUMN " + quoteSQLIdentifier(current ? current.value : "") + ";";
+            }
+            preview.textContent = sql;
+        }
+
+        ["structure-operation", "structure-current-column", "structure-new-column", "structure-data-type", "structure-nullable", "structure-default"].forEach(function (id) {
+            const element = document.getElementById(id);
+            if (element) element.addEventListener("input", renderStructureEditor);
+            if (element && element.tagName === "SELECT") element.addEventListener("change", renderStructureEditor);
+        });
+
+        const rowForm = document.getElementById("table-row-form");
+        const rowFields = document.getElementById("table-row-fields");
+        const rowAddButton = document.getElementById("table-row-add-btn");
+        const rowCancelButton = document.getElementById("table-row-cancel-btn");
+        let rowFormMode = "create";
+        let rowFormKey = {};
+
+        function openTableRowForm(mode, row) {
+            if (!rowForm || !rowFields || !selectedTableDetails) return;
+            rowFormMode = mode;
+            rowFormKey = {};
+            const primaryKeys = (selectedTableDetails.columns || []).filter(function (column) { return column.isPrimaryKey; });
+            if (mode === "edit" && primaryKeys.length === 0) { showAlert("Baris hanya bisa diedit jika tabel memiliki primary key.", "error"); return; }
+            primaryKeys.forEach(function (column) { rowFormKey[column.name] = row[column.name]; });
+            rowFields.innerHTML = (selectedTableDetails.columns || []).map(function (column) {
+                const isKey = column.isPrimaryKey;
+                const value = row && row[column.name] !== null && row[column.name] !== undefined ? String(row[column.name]) : "";
+                const isNull = !!row && (row[column.name] === null || row[column.name] === undefined);
+                return '<div class="field table-row-field"><label class="' + (isKey ? 'primary-key-label' : '') + '" for="row-value-' + escapeHTML(column.name) + '">' +
+                    escapeHTML(column.name) + ' <span class="muted">(' + escapeHTML(column.dataType) + ')</span></label>' +
+                    '<input id="row-value-' + escapeHTML(column.name) + '" data-row-column="' + escapeHTML(column.name) + '" type="text" value="' + escapeHTML(value) + '" placeholder="kosong = DEFAULT" ' + (isKey && mode === "edit" ? 'disabled' : '') + '>' +
+                    '<label class="checkbox-label"><input type="checkbox" data-row-null="' + escapeHTML(column.name) + '" ' + (isNull ? 'checked' : '') + '> NULL</label></div>';
+            }).join("");
+            rowForm.hidden = false;
+            rowForm.scrollIntoView({ behavior: "smooth", block: "nearest" });
+        }
+
+        if (rowAddButton) rowAddButton.addEventListener("click", function () { openTableRowForm("create", null); });
+        if (rowCancelButton) rowCancelButton.addEventListener("click", function () { if (rowForm) rowForm.hidden = true; });
+
+        if (rowForm) rowForm.addEventListener("submit", async function (event) {
+            event.preventDefault();
+            if (!migrationCanEdit || !selectedSchema || !selectedTable) return;
+            const values = {};
+            rowFields.querySelectorAll("[data-row-column]").forEach(function (input) {
+                const name = input.getAttribute("data-row-column");
+                if (input.disabled) return;
+                const nullInput = rowFields.querySelector('[data-row-null="' + CSS.escape(name) + '"]');
+                if (nullInput && nullInput.checked) values[name] = null;
+                else if (input.value !== "") values[name] = input.value;
+            });
+            const suffix = "/schemas/" + encodeURIComponent(selectedSchema) + "/tables/" + encodeURIComponent(selectedTable) + "/rows";
+            const editing = rowFormMode === "edit";
+            try {
+                await apiFetch("/api/databases/" + encodeURIComponent(databaseID) + suffix, {
+                    method: editing ? "PUT" : "POST",
+                    body: editing ? { key: rowFormKey, values: values } : { values: values }
+                });
+                rowForm.hidden = true;
+                showAlert("Baris berhasil disimpan.", "success");
+                await loadTableRows(selectedSchema, selectedTable);
+            } catch (err) { showAlert(err.message, "error"); }
+        });
+
+        const structureForm = document.getElementById("structure-editor-form");
+        if (structureForm) structureForm.addEventListener("submit", async function (event) {
+            event.preventDefault();
+            if (!migrationCanEdit || !selectedTable) return;
+            const sql = (document.getElementById("structure-sql-preview").textContent || "").trim();
+            const name = document.getElementById("structure-migration-name").value.trim();
+            if (!sql || sql.indexOf(";") === -1 || sql.indexOf("valid") !== -1 || sql.indexOf("Isi ") === 0) { showAlert("Lengkapi perubahan struktur terlebih dahulu.", "error"); return; }
+            try {
+                const result = await apiFetch(migrationPath(""), { method: "POST", body: { name: name, sql: sql } });
+                showAlert("Draft migration dibuat. Buka Migration Editor untuk meninjau dan menjalankannya.", "success");
+                if (result && result.migration) migrationList.unshift(result.migration);
+                document.querySelectorAll(".workspace-tab-btn").forEach(function (tab) { tab.classList.toggle("active", tab.getAttribute("data-workspace-tab") === "migrations"); });
+                document.querySelectorAll(".workspace-panel").forEach(function (panel) { panel.hidden = panel.id !== "workspace-migrations"; });
+                loadMigrationHistory();
+            } catch (err) { showAlert(err.message, "error"); }
+        });
 
         const tabButtons = document.querySelectorAll(".tab-btn");
         tabButtons.forEach(function (btn) {
@@ -299,6 +629,8 @@
             const targetTable = selectedTable;
             if (!targetSchema || !targetTable) return;
             const reqSeq = ++tableLoadSeq;
+            selectedTableDetails = null;
+            updateTableEditorControls();
 
             const tableTitle = document.getElementById("selected-table-title");
             const tableSubtitle = document.getElementById("selected-table-subtitle");
@@ -319,6 +651,8 @@
                         (details.constraints ? details.constraints.length : 0) + " constraint, " +
                         (details.indexes ? details.indexes.length : 0) + " index";
                 }
+                selectedTableDetails = details;
+                updateTableEditorControls();
 
                 const colBody = document.getElementById("columns-tbody");
                 if (colBody) {
@@ -408,6 +742,9 @@
                 }
                 const cols = page.columns || [];
                 const rows = page.rows || [];
+                const editorHead = document.getElementById("editor-rows-thead");
+                const editorBody = document.getElementById("editor-rows-tbody");
+                const primaryKeys = (selectedTableDetails && selectedTableDetails.columns || []).filter(function (column) { return column.isPrimaryKey; });
 
                 if (infoEl) {
                     const start = rows.length > 0 ? page.offset + 1 : 0;
@@ -438,6 +775,41 @@
                                 return "<td>" + escapeHTML(val) + "</td>";
                             }).join("") + "</tr>";
                         }).join("");
+                    }
+                }
+                if (editorHead) editorHead.innerHTML = "<tr>" + cols.map(function (column) {
+                    return "<th>" + escapeHTML(column.name) + ' <span class="muted">(' + escapeHTML(column.databaseType) + ")</span></th>";
+                }).join("") + (migrationCanEdit ? "<th>Aksi</th>" : "") + "</tr>";
+                if (editorBody) {
+                    if (rows.length === 0) {
+                        editorBody.innerHTML = '<tr><td colspan="' + Math.max(cols.length + (migrationCanEdit ? 1 : 0), 1) + '" class="muted">Tabel belum memiliki baris data.</td></tr>';
+                    } else {
+                        editorBody.innerHTML = rows.map(function (row, index) {
+                            const cells = cols.map(function (column) {
+                                const value = row[column.name];
+                                if (value === null || value === undefined) return '<td><span class="badge badge-neutral">NULL</span></td>';
+                                return '<td>' + escapeHTML(typeof value === "object" ? JSON.stringify(value) : value) + '</td>';
+                            }).join("");
+                            const actions = migrationCanEdit ? '<td class="row-action-cell"><button type="button" class="btn btn-outline btn-sm editor-row-edit" data-row-index="' + index + '" ' + (!primaryKeys.length ? 'disabled title="Tabel belum memiliki primary key"' : '') + '>Edit</button> <button type="button" class="btn btn-danger btn-sm editor-row-delete" data-row-index="' + index + '" ' + (!primaryKeys.length ? 'disabled title="Tabel belum memiliki primary key"' : '') + '>Hapus</button></td>' : '';
+                            return '<tr>' + cells + actions + '</tr>';
+                        }).join("");
+                        editorBody.querySelectorAll(".editor-row-edit").forEach(function (button) {
+                            button.addEventListener("click", function () { openTableRowForm("edit", rows[Number(button.getAttribute("data-row-index"))]); });
+                        });
+                        editorBody.querySelectorAll(".editor-row-delete").forEach(function (button) {
+                            button.addEventListener("click", async function () {
+                                const row = rows[Number(button.getAttribute("data-row-index"))];
+                                const key = {};
+                                primaryKeys.forEach(function (column) { key[column.name] = row[column.name]; });
+                                if (!window.confirm("Hapus baris ini dari " + targetSchema + "." + targetTable + "?")) return;
+                                try {
+                                    const path = "/api/databases/" + encodeURIComponent(databaseID) + "/schemas/" + encodeURIComponent(targetSchema) + "/tables/" + encodeURIComponent(targetTable) + "/rows";
+                                    await apiFetch(path, { method: "DELETE", body: { key: key } });
+                                    showAlert("Baris berhasil dihapus.", "success");
+                                    await loadTableRows(targetSchema, targetTable);
+                                } catch (err) { showAlert(err.message, "error"); }
+                            });
+                        });
                     }
                 }
             } catch (err) {
@@ -484,8 +856,11 @@
                 const db = summary.database;
                 const status = summary.status;
                 const effectiveAccess = db.access || "view_only";
+                migrationCanEdit = effectiveAccess === "view_edit";
+                updateMigrationControls();
+                updateTableEditorControls();
 
-                if (titleEl) titleEl.textContent = db.name + " (" + db.id + ")";
+                if (titleEl) titleEl.textContent = db.name;
                 if (metaEl) metaEl.textContent = db.host + ":" + db.port + "/" + db.databaseName + " — User: " + db.username + " (SSL: " + db.sslMode + ")";
                 if (accessBadge) {
                     accessBadge.textContent = "Akses: " + formatAccessLabel(effectiveAccess);
@@ -527,6 +902,208 @@
         if (reloadBtn) {
             reloadBtn.addEventListener("click", loadSchemaOverview);
         }
+
+        function migrationPath(suffix) {
+            return "/api/databases/" + encodeURIComponent(databaseID) + "/migrations" + (suffix || "");
+        }
+
+        function statusLabel(status) {
+            const labels = { draft: "Draft", running: "Berjalan", applied: "Sukses", failed: "Gagal" };
+            return labels[status] || status || "-";
+        }
+
+        function statusBadgeClass(status) {
+            if (status === "applied") return "badge-success";
+            if (status === "failed") return "badge-danger";
+            if (status === "running") return "badge-warning";
+            return "badge-neutral";
+        }
+
+        function formatMigrationDate(value) {
+            if (!value) return "Belum dijalankan";
+            const date = new Date(value);
+            return Number.isNaN(date.getTime()) ? "-" : date.toLocaleString("id-ID");
+        }
+
+        function updateMigrationControls(migration) {
+            const nameInput = document.getElementById("migration-name");
+            const sqlInput = document.getElementById("migration-sql");
+            const saveBtn = document.getElementById("save-migration-btn");
+            const runBtn = document.getElementById("run-migration-btn");
+            const newBtn = document.getElementById("new-migration-btn");
+            const hint = document.getElementById("migration-access-hint");
+            const status = migration ? migration.status : "draft";
+            const editable = migrationCanEdit && (!migration || status === "draft" || status === "failed");
+
+            if (nameInput) nameInput.readOnly = !editable;
+            if (sqlInput) sqlInput.readOnly = !editable;
+            if (saveBtn) saveBtn.hidden = !editable;
+            if (newBtn) newBtn.hidden = !migrationCanEdit;
+            if (runBtn) {
+                runBtn.hidden = !migrationCanEdit;
+                runBtn.disabled = !migrationCanEdit || !migration || (status !== "draft" && status !== "failed");
+            }
+            if (hint) {
+                hint.textContent = migrationCanEdit
+                    ? "Akses View + Edit aktif. Perubahan SQL hanya bisa disimpan sebelum migration sukses."
+                    : "Akses View Only: SQL dan riwayat bisa dilihat, perubahan dan eksekusi hanya untuk View + Edit.";
+            }
+        }
+
+        function renderMigrationHistory() {
+            const tbody = document.getElementById("migration-history-tbody");
+            if (!tbody) return;
+            if (migrationList.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="4" class="muted">Belum ada migration untuk database ini.</td></tr>';
+                return;
+            }
+            tbody.innerHTML = migrationList.map(function (migration) {
+                const active = String(migration.id) === String(selectedMigrationId);
+                const timestamp = migration.executedAt || migration.updatedAt || migration.createdAt;
+                return (
+                    '<tr class="migration-row ' + (active ? 'active' : '') + '" data-migration-id="' + escapeHTML(migration.id) + '" tabindex="0">' +
+                    '  <td><code>V' + escapeHTML(migration.version) + '</code></td>' +
+                    '  <td><strong>' + escapeHTML(migration.name) + '</strong></td>' +
+                    '  <td><span class="badge ' + statusBadgeClass(migration.status) + '">' + escapeHTML(statusLabel(migration.status)) + '</span></td>' +
+                    '  <td>' + escapeHTML(formatMigrationDate(timestamp)) + '</td>' +
+                    '</tr>'
+                );
+            }).join("");
+        }
+
+        function showMigration(migration) {
+            const form = document.getElementById("migration-form");
+            const title = document.getElementById("migration-editor-title");
+            const hint = document.getElementById("migration-editor-hint");
+            const status = document.getElementById("migration-editor-status");
+            const nameInput = document.getElementById("migration-name");
+            const sqlInput = document.getElementById("migration-sql");
+            if (!migration) {
+                selectedMigrationId = null;
+                if (form) form.reset();
+                if (title) title.textContent = "Migration baru";
+                if (hint) hint.textContent = "Tulis SQL, simpan sebagai draft, lalu jalankan setelah diperiksa.";
+                if (status) {
+                    status.textContent = "Draft baru";
+                    status.className = "badge badge-neutral";
+                }
+                updateMigrationControls(null);
+                renderMigrationHistory();
+                return;
+            }
+
+            selectedMigrationId = migration.id;
+            if (nameInput) nameInput.value = migration.name || "";
+            if (sqlInput) sqlInput.value = migration.sql || "";
+            if (title) title.textContent = "V" + migration.version + " - " + migration.name;
+            if (hint) {
+                if (migration.lastError) {
+                    hint.textContent = migration.lastError;
+                } else if (migration.executedAt) {
+                    hint.textContent = "Dijalankan oleh user #" + migration.executedBy + " pada " + formatMigrationDate(migration.executedAt) + ".";
+                } else {
+                    hint.textContent = "Draft dibuat oleh user #" + migration.createdBy + " pada " + formatMigrationDate(migration.createdAt) + ".";
+                }
+            }
+            if (status) {
+                status.textContent = "V" + migration.version + " - " + statusLabel(migration.status);
+                status.className = "badge " + statusBadgeClass(migration.status);
+            }
+            updateMigrationControls(migration);
+            renderMigrationHistory();
+        }
+
+        async function loadMigrationHistory(selectID) {
+            const tbody = document.getElementById("migration-history-tbody");
+            if (tbody) tbody.innerHTML = '<tr><td colspan="4" class="muted">Memuat riwayat...</td></tr>';
+            try {
+                const data = await apiFetch(migrationPath());
+                migrationList = data.migrations || [];
+                renderMigrationHistory();
+                const idToSelect = selectID || selectedMigrationId;
+                const selected = migrationList.find(function (item) { return String(item.id) === String(idToSelect); });
+                if (selected) {
+                    showMigration(selected);
+                } else if (idToSelect) {
+                    showMigration(null);
+                }
+            } catch (err) {
+                if (tbody) tbody.innerHTML = '<tr><td colspan="4" class="muted">Gagal memuat riwayat migration.</td></tr>';
+                showAlert(err.message, "error");
+            }
+        }
+
+        const historyBody = document.getElementById("migration-history-tbody");
+        if (historyBody) {
+            historyBody.addEventListener("click", function (event) {
+                const row = event.target.closest("tr[data-migration-id]");
+                if (!row) return;
+                const selected = migrationList.find(function (item) { return String(item.id) === row.getAttribute("data-migration-id"); });
+                if (selected) showMigration(selected);
+            });
+            historyBody.addEventListener("keydown", function (event) {
+                if (event.key !== "Enter" && event.key !== " ") return;
+                const row = event.target.closest("tr[data-migration-id]");
+                if (!row) return;
+                event.preventDefault();
+                const selected = migrationList.find(function (item) { return String(item.id) === row.getAttribute("data-migration-id"); });
+                if (selected) showMigration(selected);
+            });
+        }
+
+        const migrationForm = document.getElementById("migration-form");
+        if (migrationForm) {
+            migrationForm.addEventListener("submit", async function (event) {
+                event.preventDefault();
+                if (!migrationCanEdit) return;
+                const input = {
+                    name: document.getElementById("migration-name").value.trim(),
+                    sql: document.getElementById("migration-sql").value
+                };
+                const isUpdate = selectedMigrationId !== null;
+                const path = isUpdate ? migrationPath("/" + encodeURIComponent(selectedMigrationId)) : migrationPath();
+                try {
+                    const saved = await apiFetch(path, { method: isUpdate ? "PUT" : "POST", body: input });
+                    showAlert("Draft migration V" + saved.version + " berhasil disimpan.", "success");
+                    await loadMigrationHistory(saved.id);
+                } catch (err) {
+                    showAlert(err.message, "error");
+                }
+            });
+        }
+
+        const newMigrationBtn = document.getElementById("new-migration-btn");
+        if (newMigrationBtn) newMigrationBtn.addEventListener("click", function () { showMigration(null); });
+
+        const runMigrationBtn = document.getElementById("run-migration-btn");
+        if (runMigrationBtn) {
+            runMigrationBtn.addEventListener("click", async function () {
+                if (!migrationCanEdit || selectedMigrationId === null) return;
+                const migration = migrationList.find(function (item) { return String(item.id) === String(selectedMigrationId); });
+                if (!migration || (migration.status !== "draft" && migration.status !== "failed")) return;
+                if (!window.confirm("Jalankan migration V" + migration.version + " pada database ini? SQL yang sukses akan mengubah database target.")) return;
+                runMigrationBtn.disabled = true;
+                try {
+                    const result = await apiFetch(migrationPath("/" + encodeURIComponent(selectedMigrationId) + "/execute"), { method: "POST" });
+                    showAlert("Migration V" + result.version + " berhasil dijalankan.", "success");
+                    await loadMigrationHistory(result.id);
+                } catch (err) {
+                    const failedMigration = err.payload && err.payload.migration;
+                    if (failedMigration) {
+                        await loadMigrationHistory(failedMigration.id);
+                    } else {
+                        await loadMigrationHistory();
+                    }
+                    showAlert(err.message, "error");
+                } finally {
+                    updateMigrationControls(migrationList.find(function (item) { return String(item.id) === String(selectedMigrationId); }));
+                }
+            });
+        }
+
+        const refreshMigrationsBtn = document.getElementById("refresh-migrations-btn");
+        if (refreshMigrationsBtn) refreshMigrationsBtn.addEventListener("click", function () { loadMigrationHistory(); });
+
         await loadSchemaOverview();
     }
 
