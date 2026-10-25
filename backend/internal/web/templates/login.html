@@ -1,0 +1,21 @@
+{{define "content"}}
+<section class="auth-wrapper">
+    <div class="card auth-card">
+        <div class="card-header">
+            <h1>Masuk ke Platform</h1>
+            <p class="muted">Gunakan akun pengguna atau Platform Admin untuk mengakses database PostgreSQL.</p>
+        </div>
+        <form id="login-form" class="form-stack">
+            <div class="field">
+                <label for="login-username">Username</label>
+                <input id="login-username" name="username" type="text" required autocomplete="username" placeholder="mis. admin_01">
+            </div>
+            <div class="field">
+                <label for="login-password">Password</label>
+                <input id="login-password" name="password" type="password" required autocomplete="current-password" placeholder="Minimal 12 karakter">
+            </div>
+            <button type="submit" class="btn btn-primary btn-block">Masuk</button>
+        </form>
+    </div>
+</section>
+{{end}}

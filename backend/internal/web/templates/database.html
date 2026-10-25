@@ -1,0 +1,215 @@
+{{define "content"}}
+<section class="page-header">
+    <div>
+        <div class="breadcrumb">
+            <a href="/">Daftar Database</a> &rsaquo; <span id="db-header-id">{{.DatabaseID}}</span>
+        </div>
+        <h1 id="db-header-title">Database: {{.DatabaseID}}</h1>
+        <p id="db-header-meta" class="muted">Memeriksa status koneksi dan hak akses...</p>
+    </div>
+    <div class="header-actions">
+        <span id="db-access-badge" class="badge badge-neutral">Memuat akses...</span>
+        <span id="db-conn-badge" class="badge badge-neutral">Memeriksa koneksi...</span>
+        <button type="button" id="reload-schema-btn" class="btn btn-outline">Muat Ulang Schema</button>
+    </div>
+</section>
+
+<div class="workspace-tabs" role="tablist" aria-label="Database tools">
+    <button type="button" class="workspace-tab-btn" data-workspace-tab="visualizer">Schema Visualizer</button>
+    <button type="button" class="workspace-tab-btn active" data-workspace-tab="explorer">Schema &amp; Table Viewer</button>
+    <button type="button" class="workspace-tab-btn" data-workspace-tab="migrations">Migration Editor</button>
+</div>
+
+<section id="workspace-visualizer" class="workspace-panel" hidden>
+    <div class="card visualizer-card">
+        <div class="section-title-row">
+            <div>
+                <h2>Diagram Relasi Tabel</h2>
+                <p class="muted">Menampilkan kolom dan relasi Foreign Key pada schema yang bisa Anda akses.</p>
+            </div>
+            <div class="visualizer-controls">
+                <input id="visualizer-filter-input" type="search" placeholder="Cari tabel..." aria-label="Cari tabel di diagram">
+                <button type="button" id="visualizer-reload-btn" class="btn btn-outline">Muat Ulang</button>
+            </div>
+        </div>
+        <div id="schema-graph-status" class="muted">Pilih tab ini untuk memuat diagram.</div>
+        <div id="schema-graph-viewport" class="schema-graph-viewport" hidden>
+            <div id="schema-graph-canvas" class="schema-graph-canvas">
+                <svg id="schema-graph-edges" class="schema-graph-edges" aria-hidden="true"></svg>
+                <div id="schema-graph-nodes" class="schema-graph-nodes"></div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<section id="workspace-explorer" class="workspace-panel">
+<section class="explorer-layout">
+    <aside class="card explorer-sidebar">
+        <div class="sidebar-header">
+            <h2>Schema &amp; Tabel</h2>
+            <input id="schema-filter-input" type="search" placeholder="Cari schema / tabel...">
+        </div>
+        <div id="schema-tree" class="schema-tree">
+            <p class="muted">Memuat struktur schema...</p>
+        </div>
+    </aside>
+
+    <section class="card explorer-main">
+        <div class="explorer-toolbar">
+            <div>
+                <h2 id="selected-table-title">Pilih sebuah tabel di panel kiri</h2>
+                <p id="selected-table-subtitle" class="muted">Detail kolom, constraint, index, dan baris data akan tampil di sini.</p>
+            </div>
+            <div class="tabs" role="tablist">
+                <button type="button" class="tab-btn active" data-tab="columns">Kolom</button>
+                <button type="button" class="tab-btn" data-tab="constraints">Constraint</button>
+                <button type="button" class="tab-btn" data-tab="indexes">Index</button>
+                <button type="button" class="tab-btn" data-tab="rows">Data</button>
+            </div>
+        </div>
+
+        <div id="tab-columns" class="tab-panel">
+            <div class="table-scroll">
+                <table class="data-table">
+                    <thead>
+                        <tr>
+                            <th>#</th>
+                            <th>Nama Kolom</th>
+                            <th>Tipe Data</th>
+                            <th>Nullable</th>
+                            <th>Default</th>
+                            <th>Primary Key</th>
+                        </tr>
+                    </thead>
+                    <tbody id="columns-tbody">
+                        <tr><td colspan="6" class="muted">Pilih tabel untuk melihat daftar kolom.</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
+        <div id="tab-constraints" class="tab-panel" hidden>
+            <div class="table-scroll">
+                <table class="data-table">
+                    <thead>
+                        <tr>
+                            <th>Nama Constraint</th>
+                            <th>Tipe</th>
+                            <th>Kolom</th>
+                            <th>Definisi SQL</th>
+                        </tr>
+                    </thead>
+                    <tbody id="constraints-tbody">
+                        <tr><td colspan="4" class="muted">Pilih tabel untuk melihat constraint.</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
+        <div id="tab-indexes" class="tab-panel" hidden>
+            <div class="table-scroll">
+                <table class="data-table">
+                    <thead>
+                        <tr>
+                            <th>Nama Index</th>
+                            <th>Primary</th>
+                            <th>Unique</th>
+                            <th>Kolom / Ekspresi</th>
+                            <th>Definisi SQL</th>
+                        </tr>
+                    </thead>
+                    <tbody id="indexes-tbody">
+                        <tr><td colspan="5" class="muted">Pilih tabel untuk melihat index.</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
+        <div id="tab-rows" class="tab-panel" hidden>
+            <div class="rows-controls">
+                <div class="rows-summary" id="rows-pagination-info">Belum ada tabel dipilih.</div>
+                <div class="rows-actions">
+                    <label for="rows-limit-select" class="muted">Baris:</label>
+                    <select id="rows-limit-select">
+                        <option value="25">25</option>
+                        <option value="50" selected>50</option>
+                        <option value="100">100</option>
+                        <option value="200">200</option>
+                    </select>
+                    <button type="button" id="rows-prev-btn" class="btn btn-outline btn-sm" disabled>&laquo; Sebelumnya</button>
+                    <button type="button" id="rows-next-btn" class="btn btn-outline btn-sm" disabled>Berikutnya &raquo;</button>
+                    <button type="button" id="rows-refresh-btn" class="btn btn-outline btn-sm">Segarkan</button>
+                </div>
+            </div>
+            <div class="table-scroll">
+                <table class="data-table" id="rows-table">
+                    <thead id="rows-thead">
+                        <tr><th>Data</th></tr>
+                    </thead>
+                    <tbody id="rows-tbody">
+                        <tr><td class="muted">Pilih tabel untuk melihat isi data.</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </section>
+</section>
+</section>
+
+<section id="workspace-migrations" class="workspace-panel" hidden>
+    <div class="migration-layout">
+        <section class="card migration-editor-card">
+            <div class="section-title-row">
+                <div>
+                    <h2 id="migration-editor-title">Migration baru</h2>
+                    <p id="migration-editor-hint" class="muted">Tulis SQL, simpan sebagai draft, lalu jalankan setelah diperiksa.</p>
+                </div>
+                <span id="migration-editor-status" class="badge badge-neutral">Draft baru</span>
+            </div>
+
+            <form id="migration-form" class="form-stack">
+                <div class="field">
+                    <label for="migration-name">Nama migration</label>
+                    <input id="migration-name" type="text" maxlength="120" required placeholder="mis. Tambah kolom status">
+                </div>
+                <div class="field">
+                    <label for="migration-sql">SQL</label>
+                    <textarea id="migration-sql" class="sql-editor" rows="18" maxlength="262144" required spellcheck="false" placeholder="ALTER TABLE ...;"></textarea>
+                    <span class="muted">Maksimal 256 KiB. SQL dijalankan dalam transaksi dan gagal jika lebih dari 2 menit.</span>
+                </div>
+                <div class="header-actions migration-actions">
+                    <button type="button" id="new-migration-btn" class="btn btn-outline">Draft Baru</button>
+                    <button type="submit" id="save-migration-btn" class="btn btn-primary">Simpan Draft</button>
+                    <button type="button" id="run-migration-btn" class="btn btn-danger" disabled>Jalankan Migration</button>
+                </div>
+            </form>
+            <p id="migration-access-hint" class="muted"></p>
+        </section>
+
+        <section class="card migration-history-card">
+            <div class="section-title-row">
+                <div>
+                    <h2>Riwayat Migration</h2>
+                    <p class="muted">Versi dijalankan berurutan. Versi berikutnya menunggu versi sebelumnya sukses.</p>
+                </div>
+                <button type="button" id="refresh-migrations-btn" class="btn btn-outline btn-sm">Muat Ulang</button>
+            </div>
+            <div class="table-scroll">
+                <table class="data-table migration-history-table">
+                    <thead>
+                        <tr>
+                            <th>Versi</th>
+                            <th>Migration</th>
+                            <th>Status</th>
+                            <th>Waktu</th>
+                        </tr>
+                    </thead>
+                    <tbody id="migration-history-tbody">
+                        <tr><td colspan="4" class="muted">Memuat riwayat...</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </section>
+    </div>
+</section>
+{{end}}
