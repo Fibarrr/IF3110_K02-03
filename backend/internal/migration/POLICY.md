@@ -4,10 +4,10 @@
 - Versi dibuat berurutan per database saat draft dibuat. Migration versi berikutnya baru bisa dijalankan setelah semua versi sebelumnya sukses.
 - Pengguna dengan akses `view_only` bisa melihat SQL dan riwayat. Membuat, mengubah, atau menjalankan migration butuh `view_edit` serta token CSRF.
 - Draft dan migration yang gagal bisa diubah. Migration yang sukses tidak bisa diedit atau dijalankan ulang.
-- SQL dijalankan dalam satu transaksi PostgreSQL. Kalau ada error, transaksi di-rollback, status menjadi `failed`, dan versi berikutnya tertahan sampai migration itu diperbaiki lalu dijalankan.
+- SQL dijalankan dalam satu transaksi PostgreSQL. Kalau perintah SQL gagal, transaksi di-rollback, status menjadi `failed`, dan riwayat menyimpan SQLSTATE serta pesan PostgreSQL yang aman. Versi berikutnya tertahan sampai migration itu diperbaiki lalu dijalankan.
 - SQL dibatasi maksimal 256 KiB dan waktu eksekusi maksimal 2 menit. Role PostgreSQL target harus punya izin untuk menjalankan SQL yang diberikan.
 - Riwayat mencatat versi, SQL, pembuat, waktu pembuatan, pelaksana, waktu eksekusi, dan status.
-- Status `running` yang tertinggal setelah proses backend mati perlu diperiksa manual sebelum dilanjutkan, karena transaksi target mungkin sudah selesai sementara status belum sempat diperbarui.
+- Status `running` yang tertinggal setelah proses backend mati atau hasil commit tidak pasti perlu diperiksa manual sebelum dilanjutkan, karena transaksi target mungkin sudah selesai sementara status belum sempat diperbarui.
 - Kalau koneksi database dihapus dari platform, migration dan riwayatnya ikut terhapus.
 
 ## Endpoint

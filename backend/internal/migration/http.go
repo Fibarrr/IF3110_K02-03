@@ -123,9 +123,17 @@ func (h *HTTPHandler) execute(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		switch {
 		case errors.Is(err, ErrExecution):
-			writeJSON(w, http.StatusUnprocessableEntity, map[string]any{"migration": m, "error": ErrExecution.Error()})
+			message := m.LastError
+			if message == "" {
+				message = ErrExecution.Error()
+			}
+			writeJSON(w, http.StatusUnprocessableEntity, map[string]any{"migration": m, "error": message})
 		case errors.Is(err, databasemanagement.ErrTargetConnection):
-			writeJSON(w, http.StatusBadGateway, map[string]any{"migration": m, "error": "gagal terhubung ke database target"})
+			message := m.LastError
+			if message == "" {
+				message = err.Error()
+			}
+			writeJSON(w, http.StatusBadGateway, map[string]any{"migration": m, "error": message})
 		default:
 			writeStoreError(w, err)
 		}

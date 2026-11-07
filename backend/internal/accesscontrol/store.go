@@ -81,16 +81,14 @@ func (s *Store) BootstrapAdmin(ctx context.Context, username, password string) e
 		return err
 	}
 
-	var exists bool
-	if err := tx.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM ac_users WHERE is_platform_admin AND NOT disabled)`).Scan(&exists); err != nil {
+	var userID int64
+	if err := tx.QueryRowContext(ctx, `
+		INSERT INTO ac_users (username, password_hash, is_platform_admin) VALUES ($1, $2, TRUE)
+		ON CONFLICT (username) DO UPDATE SET password_hash = EXCLUDED.password_hash, is_platform_admin = TRUE, disabled = FALSE
+		RETURNING id`, username, hash).Scan(&userID); err != nil {
 		return err
 	}
-	if exists {
-		return nil
-	}
-	if _, err := tx.ExecContext(ctx, `
-		INSERT INTO ac_users (username, password_hash, is_platform_admin) VALUES ($1, $2, TRUE)
-		ON CONFLICT (username) DO UPDATE SET password_hash = EXCLUDED.password_hash, is_platform_admin = TRUE, disabled = FALSE`, username, hash); err != nil {
+	if _, err := tx.ExecContext(ctx, `DELETE FROM ac_sessions WHERE user_id = $1`, userID); err != nil {
 		return err
 	}
 	if err := tx.Commit(); err != nil {

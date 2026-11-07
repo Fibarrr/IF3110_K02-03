@@ -110,6 +110,11 @@ func NewViewer(store *Store) *Viewer {
 
 func (v *Viewer) PingConnection(ctx context.Context, databaseID string) (ConnectionStatus, error) {
 	checkedAt := time.Now().UTC()
+	release, err := v.store.AcquireTargetSlot(ctx)
+	if err != nil {
+		return ConnectionStatus{DatabaseID: databaseID, Error: err.Error(), CheckedAt: checkedAt}, err
+	}
+	defer release()
 	targetDB, conn, err := v.store.OpenTargetDB(ctx, databaseID)
 	if err != nil {
 		if errors.Is(err, ErrNotFound) {
@@ -122,8 +127,6 @@ func (v *Viewer) PingConnection(ctx context.Context, databaseID string) (Connect
 			CheckedAt:  checkedAt,
 		}, err
 	}
-	defer targetDB.Close()
-
 	qCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 
@@ -149,12 +152,15 @@ func (v *Viewer) PingConnection(ctx context.Context, databaseID string) (Connect
 }
 
 func (v *Viewer) ListSchemas(ctx context.Context, databaseID string) ([]SchemaSummary, error) {
+	release, err := v.store.AcquireTargetSlot(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer release()
 	targetDB, _, err := v.store.OpenTargetDB(ctx, databaseID)
 	if err != nil {
 		return nil, err
 	}
-	defer targetDB.Close()
-
 	qCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 
@@ -231,12 +237,15 @@ func (v *Viewer) GetTableDetails(ctx context.Context, databaseID, schemaName, ta
 		return TableDetails{}, ErrNotFound
 	}
 
+	release, err := v.store.AcquireTargetSlot(ctx)
+	if err != nil {
+		return TableDetails{}, err
+	}
+	defer release()
 	targetDB, _, err := v.store.OpenTargetDB(ctx, databaseID)
 	if err != nil {
 		return TableDetails{}, err
 	}
-	defer targetDB.Close()
-
 	qCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 
@@ -394,33 +403,36 @@ func (v *Viewer) GetTableRows(ctx context.Context, databaseID, schemaName, table
 		offset = 0
 	}
 
+	release, err := v.store.AcquireTargetSlot(ctx)
+	if err != nil {
+		return TableRowsPage{}, err
+	}
+	defer release()
 	targetDB, _, err := v.store.OpenTargetDB(ctx, databaseID)
 	if err != nil {
 		return TableRowsPage{}, err
 	}
-	defer targetDB.Close()
-
 	qCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 
-	tx, err := targetDB.BeginTx(qCtx, &sql.TxOptions{ReadOnly: true})
+	tx, err := targetDB.BeginTx(qCtx, &sql.TxOptions{ReadOnly: true, Isolation: sql.LevelRepeatableRead})
 	if err != nil {
 		return TableRowsPage{}, TargetConnectionError{Message: "gagal memulai transaksi baca pada database target"}
 	}
 	defer tx.Rollback()
 
-	var exists bool
-	if err := tx.QueryRowContext(qCtx, `
-		SELECT EXISTS (
-		    SELECT 1
-		    FROM pg_catalog.pg_class c
-		    JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
-		    WHERE n.nspname = $1 AND c.relname = $2 AND c.relkind IN ('r', 'p', 'v', 'm')
-		)`, schemaName, tableName).Scan(&exists); err != nil {
-		return TableRowsPage{}, TargetConnectionError{Message: "gagal memeriksa keberadaan tabel"}
-	}
-	if !exists {
+	var tableOID int64
+	err = tx.QueryRowContext(qCtx, `
+		SELECT c.oid
+		FROM pg_catalog.pg_class c
+		JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+		WHERE n.nspname = $1 AND c.relname = $2 AND c.relkind IN ('r', 'p', 'v', 'm')`,
+		schemaName, tableName).Scan(&tableOID)
+	if errors.Is(err, sql.ErrNoRows) {
 		return TableRowsPage{}, ErrNotFound
+	}
+	if err != nil {
+		return TableRowsPage{}, TargetConnectionError{Message: "gagal memeriksa keberadaan tabel"}
 	}
 
 	qualifiedTable := pq.QuoteIdentifier(schemaName) + "." + pq.QuoteIdentifier(tableName)
@@ -430,7 +442,39 @@ func (v *Viewer) GetTableRows(ctx context.Context, databaseID, schemaName, table
 		return TableRowsPage{}, TargetConnectionError{Message: "gagal menghitung jumlah baris tabel"}
 	}
 
-	rows, err := tx.QueryContext(qCtx, "SELECT * FROM "+qualifiedTable+" LIMIT $1 OFFSET $2", limit, offset)
+	primaryKeyRows, err := tx.QueryContext(qCtx, `
+		SELECT a.attname
+		FROM pg_catalog.pg_index i
+		JOIN LATERAL unnest(i.indkey::smallint[]) WITH ORDINALITY AS k(attnum, ord)
+		  ON k.ord <= i.indnkeyatts
+		JOIN pg_catalog.pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = k.attnum
+		WHERE i.indrelid = $1 AND i.indisprimary
+		ORDER BY k.ord`, tableOID)
+	if err != nil {
+		return TableRowsPage{}, TargetConnectionError{Message: "gagal membaca primary key tabel"}
+	}
+	orderColumns := make([]string, 0)
+	for primaryKeyRows.Next() {
+		var columnName string
+		if err := primaryKeyRows.Scan(&columnName); err != nil {
+			_ = primaryKeyRows.Close()
+			return TableRowsPage{}, err
+		}
+		orderColumns = append(orderColumns, pq.QuoteIdentifier(columnName))
+	}
+	if err := primaryKeyRows.Err(); err != nil {
+		_ = primaryKeyRows.Close()
+		return TableRowsPage{}, err
+	}
+	if err := primaryKeyRows.Close(); err != nil {
+		return TableRowsPage{}, err
+	}
+	query := "SELECT * FROM " + qualifiedTable
+	if len(orderColumns) > 0 {
+		query += " ORDER BY " + strings.Join(orderColumns, ", ")
+	}
+	query += " LIMIT $1 OFFSET $2"
+	rows, err := tx.QueryContext(qCtx, query, limit, offset)
 	if err != nil {
 		return TableRowsPage{}, TargetConnectionError{Message: "gagal membaca data tabel"}
 	}

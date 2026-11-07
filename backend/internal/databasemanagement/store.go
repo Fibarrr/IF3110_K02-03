@@ -2,14 +2,20 @@ package databasemanagement
 
 import (
 	"context"
+	"crypto/aes"
+	"crypto/cipher"
+	"crypto/rand"
+	"crypto/sha256"
 	"database/sql"
 	"embed"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"net"
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/lib/pq"
@@ -21,8 +27,11 @@ var schema embed.FS
 var (
 	ErrNotFound         = errors.New("database tidak ditemukan")
 	ErrConflict         = errors.New("database dengan ID atau nama tersebut sudah ada")
+	ErrMigrationRunning = errors.New("koneksi tidak bisa dihapus saat migration sedang berjalan")
 	ErrTargetConnection = errors.New("gagal terhubung ke database target")
 )
+
+const maxConcurrentTargetOps = 8
 
 type InputError string
 
@@ -68,11 +77,88 @@ type storedConnection struct {
 }
 
 type Store struct {
-	db *sql.DB
+	db             *sql.DB
+	credentialAEAD cipher.AEAD
+	targetSlots    chan struct{}
+	targetMu       sync.Mutex
+	targetPools    map[string]targetPool
+}
+
+type targetPool struct {
+	db          *sql.DB
+	fingerprint [32]byte
 }
 
 func NewStore(db *sql.DB) *Store {
-	return &Store{db: db}
+	return newStore(db, nil)
+}
+
+// NewStoreWithCredentialKey creates a store that encrypts registered database passwords.
+// key must be a base64-encoded 32-byte AES key.
+func NewStoreWithCredentialKey(db *sql.DB, encodedKey string) (*Store, error) {
+	key, err := base64.StdEncoding.DecodeString(strings.TrimSpace(encodedKey))
+	if err != nil || len(key) != 32 {
+		return nil, errors.New("DATABASE_CREDENTIALS_KEY harus berupa base64 dari 32 byte acak")
+	}
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		return nil, err
+	}
+	aead, err := cipher.NewGCM(block)
+	if err != nil {
+		return nil, err
+	}
+	return newStore(db, aead), nil
+}
+
+func newStore(db *sql.DB, credentialAEAD cipher.AEAD) *Store {
+	return &Store{
+		db:             db,
+		credentialAEAD: credentialAEAD,
+		targetSlots:    make(chan struct{}, maxConcurrentTargetOps),
+		targetPools:    make(map[string]targetPool),
+	}
+}
+
+// Close menutup pool koneksi target yang disimpan Store.
+func (s *Store) Close() error {
+	if s == nil {
+		return nil
+	}
+	s.targetMu.Lock()
+	pools := s.targetPools
+	s.targetPools = make(map[string]targetPool)
+	s.targetMu.Unlock()
+	var closeErr error
+	for _, pool := range pools {
+		if err := pool.db.Close(); err != nil && closeErr == nil {
+			closeErr = err
+		}
+	}
+	return closeErr
+}
+
+func (s *Store) invalidateTargetPool(databaseID string) {
+	s.targetMu.Lock()
+	pool, ok := s.targetPools[databaseID]
+	delete(s.targetPools, databaseID)
+	s.targetMu.Unlock()
+	if ok {
+		_ = pool.db.Close()
+	}
+}
+
+// AcquireTargetSlot membatasi jumlah operasi bersamaan ke semua database target.
+func (s *Store) AcquireTargetSlot(ctx context.Context) (func(), error) {
+	if s == nil || s.targetSlots == nil {
+		return func() {}, nil
+	}
+	select {
+	case s.targetSlots <- struct{}{}:
+		return func() { <-s.targetSlots }, nil
+	case <-ctx.Done():
+		return nil, TargetConnectionError{Message: "antrean operasi database target dibatalkan atau melewati batas waktu"}
+	}
 }
 
 func (s *Store) Migrate(ctx context.Context) error {
@@ -83,7 +169,128 @@ func (s *Store) Migrate(ctx context.Context) error {
 	if _, err := s.db.ExecContext(ctx, string(contents)); err != nil {
 		return fmt.Errorf("apply database management schema: %w", err)
 	}
+	if _, err := s.db.ExecContext(ctx, `ALTER TABLE dm_databases ADD COLUMN IF NOT EXISTS password_encrypted BYTEA NOT NULL DEFAULT ''::bytea`); err != nil {
+		return fmt.Errorf("prepare encrypted database credentials: %w", err)
+	}
+	if s.credentialAEAD != nil {
+		if err := s.encryptLegacyPasswords(ctx); err != nil {
+			return fmt.Errorf("migrate stored database credentials: %w", err)
+		}
+		if err := s.verifyEncryptedPasswords(ctx); err != nil {
+			return fmt.Errorf("verify stored database credentials: %w", err)
+		}
+	}
 	return nil
+}
+
+func (s *Store) verifyEncryptedPasswords(ctx context.Context) error {
+	rows, err := s.db.QueryContext(ctx, `SELECT id, password_encrypted FROM dm_databases WHERE octet_length(password_encrypted) > 0`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id string
+		var encrypted []byte
+		if err := rows.Scan(&id, &encrypted); err != nil {
+			return err
+		}
+		if _, err := s.decryptPassword(encrypted); err != nil {
+			return fmt.Errorf("koneksi database %q: %w", id, err)
+		}
+	}
+	return rows.Err()
+}
+
+func (s *Store) encryptLegacyPasswords(ctx context.Context) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	rows, err := tx.QueryContext(ctx, `SELECT id, password FROM dm_databases WHERE password <> '' AND octet_length(password_encrypted) = 0 ORDER BY id`)
+	if err != nil {
+		return err
+	}
+	type legacyPassword struct {
+		id       string
+		password string
+	}
+	legacy := make([]legacyPassword, 0)
+	for rows.Next() {
+		var item legacyPassword
+		if err := rows.Scan(&item.id, &item.password); err != nil {
+			_ = rows.Close()
+			return err
+		}
+		legacy = append(legacy, item)
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return err
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	for _, item := range legacy {
+		encrypted, err := s.encryptPassword(item.password)
+		if err != nil {
+			return err
+		}
+		result, err := tx.ExecContext(ctx, `UPDATE dm_databases SET password_encrypted = $2, password = '' WHERE id = $1 AND password = $3 AND octet_length(password_encrypted) = 0`, item.id, encrypted, item.password)
+		if err != nil {
+			return err
+		}
+		updated, err := result.RowsAffected()
+		if err != nil {
+			return err
+		}
+		if updated != 1 {
+			return fmt.Errorf("credential database %q berubah saat migrasi", item.id)
+		}
+	}
+	return tx.Commit()
+}
+
+func (s *Store) encryptPassword(password string) ([]byte, error) {
+	if password == "" {
+		return nil, nil
+	}
+	if s.credentialAEAD == nil {
+		return nil, errors.New("kunci enkripsi credential database belum dikonfigurasi")
+	}
+	nonce := make([]byte, s.credentialAEAD.NonceSize())
+	if _, err := rand.Read(nonce); err != nil {
+		return nil, err
+	}
+	ciphertext := s.credentialAEAD.Seal(nil, nonce, []byte(password), []byte("dm_databases.password:v1"))
+	result := make([]byte, 1, 1+len(nonce)+len(ciphertext))
+	result[0] = 1
+	result = append(result, nonce...)
+	result = append(result, ciphertext...)
+	return result, nil
+}
+
+func (s *Store) decryptPassword(encrypted []byte) (string, error) {
+	if len(encrypted) == 0 {
+		return "", nil
+	}
+	if s.credentialAEAD == nil {
+		return "", errors.New("kunci enkripsi credential database belum dikonfigurasi")
+	}
+	if encrypted[0] != 1 {
+		return "", errors.New("versi enkripsi credential database tidak dikenal")
+	}
+	start := 1
+	end := start + s.credentialAEAD.NonceSize()
+	if len(encrypted) < end+s.credentialAEAD.Overhead() {
+		return "", errors.New("credential database terenkripsi tidak valid")
+	}
+	plaintext, err := s.credentialAEAD.Open(nil, encrypted[start:end], encrypted[end:], []byte("dm_databases.password:v1"))
+	if err != nil {
+		return "", errors.New("gagal mendekripsi credential database; periksa DATABASE_CREDENTIALS_KEY")
+	}
+	return string(plaintext), nil
 }
 
 func (s *Store) CreateConnection(ctx context.Context, input ConnectionInput) (DatabaseConnection, error) {
@@ -91,18 +298,23 @@ func (s *Store) CreateConnection(ctx context.Context, input ConnectionInput) (Da
 	if err != nil {
 		return DatabaseConnection{}, err
 	}
+	encryptedPassword, err := s.encryptPassword(normalized.Password)
+	if err != nil {
+		return DatabaseConnection{}, err
+	}
 	var conn DatabaseConnection
 	err = s.db.QueryRowContext(ctx, `
-		INSERT INTO dm_databases (id, name, host, port, database_name, username, password, ssl_mode, description)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-		RETURNING id, name, host, port, database_name, username, (password <> ''), ssl_mode, description, created_at, updated_at`,
+		INSERT INTO dm_databases (id, name, host, port, database_name, username, password, password_encrypted, ssl_mode, description)
+		VALUES ($1, $2, $3, $4, $5, $6, '', $7, $8, $9)
+		RETURNING id, name, host, port, database_name, username, (password <> '' OR octet_length(password_encrypted) > 0), ssl_mode, description, created_at, updated_at`,
 		normalized.ID, normalized.Name, normalized.Host, normalized.Port, normalized.DatabaseName,
-		normalized.Username, normalized.Password, normalized.SSLMode, normalized.Description,
+		normalized.Username, encryptedPassword, normalized.SSLMode, normalized.Description,
 	).Scan(&conn.ID, &conn.Name, &conn.Host, &conn.Port, &conn.DatabaseName, &conn.Username,
 		&conn.HasPassword, &conn.SSLMode, &conn.Description, &conn.CreatedAt, &conn.UpdatedAt)
 	if err != nil {
 		return DatabaseConnection{}, mapDatabaseError(err)
 	}
+	s.invalidateTargetPool(normalized.ID)
 	return conn, nil
 }
 
@@ -116,6 +328,10 @@ func (s *Store) UpdateConnection(ctx context.Context, databaseID string, input C
 	if err != nil {
 		return DatabaseConnection{}, err
 	}
+	encryptedPassword, err := s.encryptPassword(normalized.Password)
+	if err != nil {
+		return DatabaseConnection{}, err
+	}
 	var conn DatabaseConnection
 	err = s.db.QueryRowContext(ctx, `
 		UPDATE dm_databases
@@ -124,14 +340,15 @@ func (s *Store) UpdateConnection(ctx context.Context, databaseID string, input C
 		    port = $4,
 		    database_name = $5,
 		    username = $6,
-		    password = CASE WHEN $7 = '' THEN password ELSE $7 END,
+		    password = '',
+		    password_encrypted = CASE WHEN $7::bytea IS NULL THEN password_encrypted ELSE $7 END,
 		    ssl_mode = $8,
 		    description = $9,
 		    updated_at = NOW()
 		WHERE id = $1
-		RETURNING id, name, host, port, database_name, username, (password <> ''), ssl_mode, description, created_at, updated_at`,
+		RETURNING id, name, host, port, database_name, username, (password <> '' OR octet_length(password_encrypted) > 0), ssl_mode, description, created_at, updated_at`,
 		databaseID, normalized.Name, normalized.Host, normalized.Port, normalized.DatabaseName,
-		normalized.Username, normalized.Password, normalized.SSLMode, normalized.Description,
+		normalized.Username, encryptedPassword, normalized.SSLMode, normalized.Description,
 	).Scan(&conn.ID, &conn.Name, &conn.Host, &conn.Port, &conn.DatabaseName, &conn.Username,
 		&conn.HasPassword, &conn.SSLMode, &conn.Description, &conn.CreatedAt, &conn.UpdatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -140,6 +357,7 @@ func (s *Store) UpdateConnection(ctx context.Context, databaseID string, input C
 	if err != nil {
 		return DatabaseConnection{}, mapDatabaseError(err)
 	}
+	s.invalidateTargetPool(databaseID)
 	return conn, nil
 }
 
@@ -154,6 +372,22 @@ func (s *Store) DeleteConnection(ctx context.Context, databaseID string) error {
 		return err
 	}
 	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1, 311031))`, databaseID); err != nil {
+		return err
+	}
+	var migrationTable sql.NullString
+	if err := tx.QueryRowContext(ctx, `SELECT to_regclass('mg_migrations')::text`).Scan(&migrationTable); err != nil {
+		return err
+	}
+	var hasRunningMigration bool
+	if migrationTable.Valid {
+		if err := tx.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM mg_migrations WHERE database_id = $1 AND status = 'running')`, databaseID).Scan(&hasRunningMigration); err != nil {
+			return err
+		}
+	}
+	if hasRunningMigration {
+		return ErrMigrationRunning
+	}
 
 	result, err := tx.ExecContext(ctx, `DELETE FROM dm_databases WHERE id = $1`, databaseID)
 	if err != nil {
@@ -181,7 +415,11 @@ func (s *Store) DeleteConnection(ctx context.Context, databaseID string) error {
 	if _, err := tx.ExecContext(ctx, `DELETE FROM ac_database_grants WHERE database_id = $1`, databaseID); err != nil {
 		return err
 	}
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	s.invalidateTargetPool(databaseID)
+	return nil
 }
 
 func (s *Store) GetConnection(ctx context.Context, databaseID string) (DatabaseConnection, error) {
@@ -194,7 +432,8 @@ func (s *Store) GetConnection(ctx context.Context, databaseID string) (DatabaseC
 
 func (s *Store) ListConnections(ctx context.Context) ([]DatabaseConnection, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT id, name, host, port, database_name, username, (password <> ''), ssl_mode, description, created_at, updated_at
+		SELECT id, name, host, port, database_name, username,
+		       (password <> '' OR octet_length(password_encrypted) > 0), ssl_mode, description, created_at, updated_at
 		FROM dm_databases
 		ORDER BY name, id`)
 	if err != nil {
@@ -214,25 +453,39 @@ func (s *Store) ListConnections(ctx context.Context) ([]DatabaseConnection, erro
 	return conns, rows.Err()
 }
 
-// OpenTargetDB membuka koneksi *sql.DB ke database PostgreSQL target yang terdaftar.
-// Caller wajib menutup *sql.DB yang dikembalikan setelah selesai dipakai.
+// OpenTargetDB mengambil pool yang digunakan ulang untuk database target terdaftar.
+// Store menutup pool melalui Close atau saat konfigurasi koneksi berubah.
 func (s *Store) OpenTargetDB(ctx context.Context, databaseID string) (*sql.DB, DatabaseConnection, error) {
 	stored, err := s.getStoredConnection(ctx, databaseID)
 	if err != nil {
 		return nil, DatabaseConnection{}, err
 	}
-	targetDB, err := sql.Open("postgres", buildPostgresDSN(stored))
-	if err != nil {
-		return nil, stored.DatabaseConnection, TargetConnectionError{Message: sanitizeConnectionError(err, stored.Password)}
+	dsn := buildPostgresDSN(stored)
+	fingerprint := sha256.Sum256([]byte(dsn))
+	s.targetMu.Lock()
+	pool, ok := s.targetPools[stored.ID]
+	if !ok || pool.fingerprint != fingerprint {
+		if ok {
+			_ = pool.db.Close()
+		}
+		targetDB, openErr := sql.Open("postgres", dsn)
+		if openErr != nil {
+			s.targetMu.Unlock()
+			return nil, stored.DatabaseConnection, TargetConnectionError{Message: sanitizeConnectionError(openErr, stored.Password)}
+		}
+		targetDB.SetMaxOpenConns(2)
+		targetDB.SetMaxIdleConns(1)
+		targetDB.SetConnMaxIdleTime(time.Minute)
+		targetDB.SetConnMaxLifetime(2 * time.Minute)
+		pool = targetPool{db: targetDB, fingerprint: fingerprint}
+		s.targetPools[stored.ID] = pool
 	}
-	targetDB.SetMaxOpenConns(2)
-	targetDB.SetMaxIdleConns(1)
-	targetDB.SetConnMaxLifetime(2 * time.Minute)
+	s.targetMu.Unlock()
+	targetDB := pool.db
 
 	pingCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 	if err := targetDB.PingContext(pingCtx); err != nil {
-		_ = targetDB.Close()
 		return nil, stored.DatabaseConnection, TargetConnectionError{Message: sanitizeConnectionError(err, stored.Password)}
 	}
 	return targetDB, stored.DatabaseConnection, nil
@@ -244,18 +497,29 @@ func (s *Store) getStoredConnection(ctx context.Context, databaseID string) (sto
 		return storedConnection{}, ErrNotFound
 	}
 	var stored storedConnection
+	var legacyPassword string
+	var encryptedPassword []byte
 	err := s.db.QueryRowContext(ctx, `
-		SELECT id, name, host, port, database_name, username, password, (password <> ''), ssl_mode, description, created_at, updated_at
+		SELECT id, name, host, port, database_name, username, password, password_encrypted,
+		       (password <> '' OR octet_length(password_encrypted) > 0), ssl_mode, description, created_at, updated_at
 		FROM dm_databases
 		WHERE id = $1`, databaseID).
 		Scan(&stored.ID, &stored.Name, &stored.Host, &stored.Port, &stored.DatabaseName,
-			&stored.Username, &stored.Password, &stored.HasPassword, &stored.SSLMode,
+			&stored.Username, &legacyPassword, &encryptedPassword, &stored.HasPassword, &stored.SSLMode,
 			&stored.Description, &stored.CreatedAt, &stored.UpdatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return storedConnection{}, ErrNotFound
 	}
 	if err != nil {
 		return storedConnection{}, err
+	}
+	if len(encryptedPassword) > 0 {
+		stored.Password, err = s.decryptPassword(encryptedPassword)
+		if err != nil {
+			return storedConnection{}, err
+		}
+	} else {
+		stored.Password = legacyPassword
 	}
 	return stored, nil
 }
@@ -381,7 +645,36 @@ func sanitizeConnectionError(err error, _ string) string {
 	if err == nil {
 		return ""
 	}
-	return "gagal terhubung ke database target"
+	if errors.Is(err, context.DeadlineExceeded) {
+		return "waktu koneksi habis; periksa host, port, dan apakah PostgreSQL target sedang berjalan"
+	}
+	var dnsErr *net.DNSError
+	if errors.As(err, &dnsErr) {
+		return "nama host database tidak ditemukan; periksa nilai host"
+	}
+	var opErr *net.OpError
+	if errors.As(err, &opErr) {
+		if opErr.Timeout() {
+			return "waktu koneksi habis; periksa host, port, dan firewall database target"
+		}
+		return "server database tidak dapat dijangkau; periksa host dan port"
+	}
+	var pqErr *pq.Error
+	if errors.As(err, &pqErr) {
+		switch string(pqErr.Code) {
+		case "28P01":
+			return "autentikasi PostgreSQL ditolak; periksa username dan password"
+		case "3D000":
+			return "database target tidak ditemukan; periksa nama database"
+		case "28000":
+			return "aturan autentikasi PostgreSQL menolak koneksi untuk user atau host ini"
+		case "42501":
+			return "user PostgreSQL tidak memiliki izin yang diperlukan"
+		default:
+			return "PostgreSQL menolak koneksi (SQLSTATE " + string(pqErr.Code) + "); periksa konfigurasi target"
+		}
+	}
+	return "gagal terhubung ke database target; periksa host, port, nama database, kredensial, dan SSL mode"
 }
 
 func mapDatabaseError(err error) error {

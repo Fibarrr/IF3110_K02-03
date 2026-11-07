@@ -85,7 +85,11 @@ func TestPostgresDatabaseManagementIntegration(t *testing.T) {
 	if err := acStore.Migrate(ctx); err != nil {
 		t.Fatal(err)
 	}
-	dmStore := NewStore(db)
+	dmStore, err := NewStoreWithCredentialKey(db, "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer dmStore.Close()
 	if err := dmStore.Migrate(ctx); err != nil {
 		t.Fatal(err)
 	}

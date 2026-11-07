@@ -75,7 +75,11 @@ func TestPostgresMigrationLifecycle(t *testing.T) {
 	}
 	defer db.Close()
 
-	dmStore := databasemanagement.NewStore(db)
+	dmStore, err := databasemanagement.NewStoreWithCredentialKey(db, "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer dmStore.Close()
 	if err := dmStore.Migrate(ctx); err != nil {
 		t.Fatal(err)
 	}
@@ -102,7 +106,6 @@ func TestPostgresMigrationLifecycle(t *testing.T) {
 	defer func() {
 		target, _, openErr := dmStore.OpenTargetDB(ctx, databaseID)
 		if openErr == nil {
-			defer target.Close()
 			_, _ = target.ExecContext(ctx, `DROP TABLE IF EXISTS public.`+pq.QuoteIdentifier(tableName)+`, public.`+pq.QuoteIdentifier(rollbackTable))
 		}
 		_ = dmStore.DeleteConnection(ctx, databaseID)
@@ -136,10 +139,8 @@ func TestPostgresMigrationLifecycle(t *testing.T) {
 	var rolledBack sql.NullString
 	err = target.QueryRowContext(ctx, `SELECT to_regclass($1)`, "public."+rollbackTable).Scan(&rolledBack)
 	if err != nil || rolledBack.Valid {
-		_ = target.Close()
 		t.Fatalf("tabel dari transaksi gagal seharusnya tidak ada: table=%v err=%v", rolledBack, err)
 	}
-	_ = target.Close()
 
 	updated, err := store.Update(ctx, databaseID, second.ID, 102, Input{Name: "fixed migration", SQL: `ALTER TABLE public.` + pq.QuoteIdentifier(tableName) + ` ADD COLUMN label TEXT`})
 	if err != nil || updated.Status != "draft" || updated.Version != 2 {

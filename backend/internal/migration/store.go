@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/Fibarrr/IF3110_K02-03/backend/internal/databasemanagement"
+	"github.com/lib/pq"
 )
 
 //go:embed schema.sql
@@ -53,6 +54,7 @@ type Migration struct {
 
 type TargetStore interface {
 	GetConnection(ctx context.Context, databaseID string) (databasemanagement.DatabaseConnection, error)
+	AcquireTargetSlot(ctx context.Context) (func(), error)
 	OpenTargetDB(ctx context.Context, databaseID string) (*sql.DB, databasemanagement.DatabaseConnection, error)
 }
 
@@ -178,6 +180,11 @@ func (s *Store) Execute(ctx context.Context, databaseID string, migrationID, use
 	if databaseID == "" || migrationID < 1 || userID < 1 {
 		return Migration{}, InputError("database, migration, dan user harus valid")
 	}
+	releaseTarget, err := s.targets.AcquireTargetSlot(ctx)
+	if err != nil {
+		return Migration{}, err
+	}
+	defer releaseTarget()
 	metaTx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return Migration{}, err
@@ -228,14 +235,12 @@ func (s *Store) Execute(ctx context.Context, databaseID string, migrationID, use
 	targetDB, _, err := s.targets.OpenTargetDB(ctx, databaseID)
 	if err != nil {
 		m.Status = "failed"
-		m.LastError = "gagal terhubung ke database target"
+		m.LastError = err.Error()
 		if updateErr := s.saveExecutionFailure(&m); updateErr != nil {
 			return Migration{}, updateErr
 		}
 		return m, err
 	}
-	defer targetDB.Close()
-
 	executionCtx, cancel := context.WithTimeout(ctx, maxExecutionDuration)
 	defer cancel()
 	targetTx, err := targetDB.BeginTx(executionCtx, &sql.TxOptions{})
@@ -245,21 +250,26 @@ func (s *Store) Execute(ctx context.Context, databaseID string, migrationID, use
 	if err != nil {
 		if targetTx != nil {
 			_ = targetTx.Rollback()
+			m.LastError = describeExecutionError(err)
+		} else {
+			m.LastError = "gagal memulai transaksi pada database target: " + describeDatabaseError(err)
 		}
 		m.Status = "failed"
-		m.LastError = "SQL gagal; perubahan sudah di-rollback"
 		if updateErr := s.saveExecutionFailure(&m); updateErr != nil {
 			return Migration{}, updateErr
 		}
-		return m, fmt.Errorf("%w: %v", ErrExecution, err)
+		return m, fmt.Errorf("%w: %s", ErrExecution, m.LastError)
 	}
 	if err := targetTx.Commit(); err != nil {
-		m.Status = "failed"
-		m.LastError = "transaksi target gagal di-commit"
+		// Hasil commit bisa tidak pasti jika koneksi terputus tepat setelah PostgreSQL
+		// melakukan commit. Biarkan status running agar operator memeriksa target
+		// sebelum mencoba ulang migration.
+		m.Status = "running"
+		m.LastError = "hasil commit transaksi tidak dapat dipastikan; periksa database target sebelum menjalankan ulang: " + describeDatabaseError(err)
 		if updateErr := s.saveExecutionFailure(&m); updateErr != nil {
 			return Migration{}, updateErr
 		}
-		return m, fmt.Errorf("%w: %v", ErrExecution, err)
+		return m, fmt.Errorf("%w: %s", ErrExecution, m.LastError)
 	}
 
 	now = time.Now().UTC()
@@ -280,8 +290,37 @@ func (s *Store) saveExecutionFailure(m *Migration) error {
 func (s *Store) saveExecutionStatus(m *Migration) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	_, err := s.db.ExecContext(ctx, `UPDATE mg_migrations SET status=$3, updated_at=$4, last_error=$5 WHERE database_id=$1 AND id=$2 AND status='running'`, m.DatabaseID, m.ID, m.Status, m.UpdatedAt, m.LastError)
-	return err
+	result, err := s.db.ExecContext(ctx, `UPDATE mg_migrations SET status=$3, updated_at=$4, last_error=$5 WHERE database_id=$1 AND id=$2 AND status='running'`, m.DatabaseID, m.ID, m.Status, m.UpdatedAt, m.LastError)
+	if err != nil {
+		return err
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if rows != 1 {
+		return errors.New("status migration tidak tersimpan: baris riwayat tidak ditemukan atau statusnya sudah berubah")
+	}
+	return nil
+}
+
+func describeExecutionError(err error) string {
+	return "SQL gagal (" + describeDatabaseError(err) + "); perubahan sudah di-rollback"
+}
+
+func describeDatabaseError(err error) string {
+	if errors.Is(err, context.DeadlineExceeded) {
+		return "batas waktu operasi database habis"
+	}
+	var pgErr *pq.Error
+	if errors.As(err, &pgErr) {
+		message := strings.TrimSpace(pgErr.Message)
+		if message == "" {
+			message = "PostgreSQL menolak perintah SQL"
+		}
+		return fmt.Sprintf("PostgreSQL menolak perintah (SQLSTATE %s): %s", pgErr.Code, message)
+	}
+	return err.Error()
 }
 
 type rowScanner interface{ Scan(...any) error }

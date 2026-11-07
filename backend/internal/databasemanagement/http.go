@@ -260,7 +260,7 @@ func writeStoreError(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, ErrNotFound):
 		writeError(w, http.StatusNotFound, err.Error())
-	case errors.Is(err, ErrConflict):
+	case errors.Is(err, ErrConflict), errors.Is(err, ErrMigrationRunning):
 		writeError(w, http.StatusConflict, err.Error())
 	case errors.Is(err, ErrTargetConnection):
 		writeError(w, http.StatusBadGateway, err.Error())

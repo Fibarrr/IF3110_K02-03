@@ -48,7 +48,12 @@ func main() {
 			cancel()
 			log.Fatal("gagal menyiapkan tabel Access Control")
 		}
-		dmStore := databasemanagement.NewStore(db)
+		dmStore, err := databasemanagement.NewStoreWithCredentialKey(db, os.Getenv("DATABASE_CREDENTIALS_KEY"))
+		if err != nil {
+			cancel()
+			log.Fatal("DATABASE_CREDENTIALS_KEY tidak valid atau belum diatur")
+		}
+		defer dmStore.Close()
 		if err := dmStore.Migrate(ctx); err != nil {
 			cancel()
 			log.Fatal("gagal menyiapkan tabel Database Management")
