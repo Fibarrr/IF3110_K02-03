@@ -1,5 +1,7 @@
 package databasemanagement
 
+// HTTP handler integration tests for validation, route guards, and access checks.
+
 import (
 	"context"
 	"errors"

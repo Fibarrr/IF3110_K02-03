@@ -1,5 +1,7 @@
 package accesscontrol
 
+// PostgreSQL integration tests for accounts, groups, grants, and sessions.
+
 import (
 	"context"
 	"database/sql"

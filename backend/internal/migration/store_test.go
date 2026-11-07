@@ -1,5 +1,7 @@
 package migration
 
+// Unit tests for migration input validation.
+
 import "testing"
 
 func TestValidateInput(t *testing.T) {

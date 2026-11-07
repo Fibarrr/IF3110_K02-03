@@ -1,5 +1,7 @@
 package accesscontrol
 
+// Unit tests for HTTP security helpers and authentication middleware.
+
 import (
 	"net/http"
 	"net/http/httptest"

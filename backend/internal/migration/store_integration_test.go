@@ -1,5 +1,7 @@
 package migration
 
+// PostgreSQL integration tests for ordering, transaction rollback, and migration history.
+
 import (
 	"context"
 	"crypto/rand"

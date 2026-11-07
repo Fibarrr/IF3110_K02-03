@@ -1,5 +1,7 @@
 package databasemanagement
 
+// Unit tests for connection input, ID normalization, and DSN construction.
+
 import (
 	"encoding/json"
 	"errors"

@@ -1,5 +1,7 @@
 package accesscontrol
 
+// Unit tests for password hashing and username normalization.
+
 import "testing"
 
 func TestPasswordHash(t *testing.T) {

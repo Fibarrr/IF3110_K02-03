@@ -1,5 +1,7 @@
 package databasemanagement
 
+// PostgreSQL integration tests for encrypted connections, viewer metadata, and access guards.
+
 import (
 	"context"
 	"crypto/rand"

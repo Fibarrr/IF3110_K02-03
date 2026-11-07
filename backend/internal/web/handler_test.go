@@ -1,5 +1,7 @@
 package web
 
+// HTTP integration tests for rendered pages and embedded static assets.
+
 import (
 	"net/http"
 	"net/http/httptest"

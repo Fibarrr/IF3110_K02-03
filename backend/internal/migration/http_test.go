@@ -1,5 +1,7 @@
 package migration
 
+// HTTP handler integration tests for migration routes, permissions, and CSRF protection.
+
 import (
 	"net/http"
 	"net/http/httptest"

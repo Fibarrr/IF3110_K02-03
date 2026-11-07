@@ -1,5 +1,7 @@
 package accesscontrol
 
+// Unit tests for effective database access calculation.
+
 import "testing"
 
 func TestEffectiveAccess(t *testing.T) {

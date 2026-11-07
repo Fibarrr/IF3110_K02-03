@@ -164,40 +164,50 @@ Jika PostgreSQL target berjalan pada Docker host yang sama, gunakan port host ya
 
 ## Testing
 
-Jalankan perintah dari folder `backend`.
+Test di repository dibagi berdasarkan bagian aplikasi yang diperiksa. Label di komentar awal setiap file `*_test.go` menunjukkan kategorinya.
 
-### Semua unit test
+| Jenis | Cakupan di repository | Apa yang diperiksa |
+|---|---|---|
+| Unit | `password_test.go`, `permission_test.go`, `store_test.go`, `migration/store_test.go` | Fungsi kecil tanpa PostgreSQL, seperti hash password, normalisasi username/ID, validasi input, perhitungan izin tertinggi, dan konstruksi DSN. |
+| HTTP/handler integration | `accesscontrol/http_test.go`, `databasemanagement/http_test.go`, `migration/http_test.go`, `web/handler_test.go` | Beberapa bagian dalam satu modul dirangkai melalui HTTP handler; memeriksa autentikasi, CSRF, izin route, validasi request, template, serta aset static. Sebagian memakai fake/mock untuk mengisolasi dependensi luar. |
+| PostgreSQL integration | `store_integration_test.go` pada Access Control, Database Management, dan Migration | Store dan query nyata terhadap PostgreSQL: schema terisolasi, akun/grup/sesi, kredensial koneksi, viewer metadata, urutan migration, transaksi, rollback, dan riwayat. |
+| End-to-end (HTTP API) | `internal/e2e/application_test.go` | Alur lintas modul pada server HTTP dengan PostgreSQL sungguhan: login admin, buat pengguna/grup/koneksi, atur izin, login pengguna, lihat schema/tabel, penolakan akses edit untuk `view_only`, perubahan izin langsung berlaku, jalankan migration, lihat kolom hasilnya, lalu logout. |
+| Smoke | `cmd/api/main_test.go` | Pemeriksaan cepat bahwa router utama menghubungkan health check, halaman web, static asset, dan API dengan status akses yang diharapkan. |
+
+End-to-end otomatis saat ini menguji alur dari sisi HTTP API, belum mengendalikan browser atau mengklik UI. Untuk tampilan dan interaksi browser, gunakan [Testing Flow](#testing-flow).
+
+### Menjalankan unit, handler, smoke, dan build
+
+Jalankan perintah dari folder `backend`:
 
 ```powershell
-go test ./...
+go test ./... -count=1
+go build ./...
 ```
 
-### Test satu modul
+Tanpa `TEST_DATABASE_URL`, test PostgreSQL integration dan E2E akan dilewati dengan status `SKIP`; paket tetap dapat melaporkan `ok`. `-count=1` memaksa Go menjalankan ulang test, bukan memakai hasil cache.
 
-```powershell
-go test ./internal/accesscontrol
-go test ./internal/databasemanagement
-go test ./internal/migration
-```
+### Menjalankan test per kategori
 
-### Test integrasi PostgreSQL
-
-Pastikan container PostgreSQL aktif. Set URL untuk database development lokal, lalu jalankan test integrasi:
+Semua test yang memerlukan PostgreSQL membaca environment `TEST_DATABASE_URL`. Pastikan PostgreSQL development lokal sudah aktif dan URL menunjuk ke database yang boleh dipakai test.
 
 ```powershell
 $env:TEST_DATABASE_URL = "postgres://platform:platform_dev_password@127.0.0.1:5432/platform_dev?sslmode=disable"
-go test ./... -run 'TestPostgres' -v
+
+# Semua PostgreSQL integration dan alur end-to-end HTTP
+go test ./... -run 'Test(Postgres|ApplicationUserFlow)' -v -count=1
+
+# Hanya end-to-end HTTP lintas modul
+go test ./internal/e2e -run TestApplicationUserFlow -v -count=1
 ```
 
-Gunakan port yang sesuai dengan `POSTGRES_PORT`. Test membuat schema terisolasi dengan prefix test dan membersihkannya setelah selesai. Gunakan database lokal khusus development, bukan database dengan data penting.
-
-Output seperti `no tests to run` pada paket yang tidak memiliki test bernama `TestPostgres` adalah normal untuk perintah yang memakai filter tersebut. Untuk menjalankan semua test, gunakan `go test ./...` tanpa `-run`.
-
-Untuk memeriksa kompilasi tanpa menjalankan test:
+Untuk menjalankan **semua kategori sekaligus**, set `TEST_DATABASE_URL`, lalu jalankan:
 
 ```powershell
-go build ./...
+go test ./... -count=1
 ```
+
+Test PostgreSQL membuat schema sementara dengan prefix `ac_test_`, `dm_test_`, `mg_test_`, atau `e2e_`, lalu membersihkannya. Modul Database Management dan E2E juga mendaftarkan koneksi ke database test agar viewer dan migration dapat terhubung. Gunakan database lokal khusus development, bukan database berisi data penting. Role PostgreSQL perlu izin membuat dan menghapus schema.
 
 ## Testing Flow
 

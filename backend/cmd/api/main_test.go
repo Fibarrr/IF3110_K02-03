@@ -1,5 +1,7 @@
 package main
 
+// Smoke tests for top-level health, web, static, and API route wiring.
+
 import (
 	"net/http"
 	"net/http/httptest"
