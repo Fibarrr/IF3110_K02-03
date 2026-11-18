@@ -13,10 +13,12 @@ import (
 	"testing"
 
 	"github.com/Fibarrr/IF3110_K02-03/backend/internal/databasemanagement"
+	"github.com/Fibarrr/IF3110_K02-03/backend/internal/envfile"
 	"github.com/lib/pq"
 )
 
 func TestPostgresMigrationLifecycle(t *testing.T) {
+	envfile.Load(".env", "../.env", "../../.env", "../../../.env")
 	databaseURL := os.Getenv("TEST_DATABASE_URL")
 	if databaseURL == "" {
 		t.Skip("isi TEST_DATABASE_URL untuk menjalankan tes integrasi PostgreSQL")

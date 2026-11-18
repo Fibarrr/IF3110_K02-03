@@ -11,19 +11,15 @@ Copy-Item .env.example .env
 docker compose up -d postgres
 ```
 
-Compose membaca port dan kredensial database dari `.env`. Kalau `POSTGRES_PORT` diubah (misalnya ke `5433` karena `5432` sedang dipakai), pakai port yang sama di `DATABASE_URL`. Go tidak membaca `.env` otomatis. Di PowerShell yang sama, isi konfigurasi backend seperti contoh berikut; sesuaikan `5432` dengan port lokalmu dan ganti password admin dengan password rahasia minimal 12 karakter:
+Compose membaca port dan kredensial database dari `.env`. Backend juga otomatis membaca `.env` untuk variabel yang belum disetel di terminal. Jika `POSTGRES_PORT` diubah (misalnya ke `5433` karena `5432` sedang dipakai), pakai port yang sama di `DATABASE_URL`. Isi `PLATFORM_ADMIN_USERNAME` dan `PLATFORM_ADMIN_PASSWORD` (minimal 12 karakter) di `.env`, lalu jalankan backend:
 
 ```powershell
-$env:DATABASE_URL = "postgres://platform:platform_dev_password@127.0.0.1:5432/platform_dev?sslmode=disable"
-$env:PLATFORM_ADMIN_USERNAME = "admin"
-$env:PLATFORM_ADMIN_PASSWORD = "ganti-dengan-password-rahasia"
-$env:BACKEND_PORT = "8080"
 Set-Location backend
 go mod tidy
 go run ./cmd/api
 ```
 
-Saat pertama kali jalan, backend membuat tabel Access Control dan akun Platform Admin jika belum ada admin aktif. Backend hanya memakai environment variable dari prosesnya; file `.env` dibaca otomatis oleh Docker Compose, bukan oleh Go.
+Variabel environment yang disetel langsung di terminal (`$env:...`) tetap menimpa nilai dari `.env`. Saat pertama kali jalan, backend membuat tabel Access Control dan akun Platform Admin jika belum ada admin aktif.
 
 Health check: `GET http://localhost:8080/health`.
 
@@ -45,10 +41,9 @@ Jalankan seluruh unit test dari folder `backend`:
 go test ./...
 ```
 
-Untuk menjalankan juga tes integrasi PostgreSQL, pastikan PostgreSQL dari Compose sedang berjalan. Dari folder `backend`, isi `TEST_DATABASE_URL` dengan kredensial dan port yang sama seperti `.env`:
+Untuk menjalankan juga tes integrasi PostgreSQL, pastikan PostgreSQL dari Compose sedang berjalan. Setel `TEST_DATABASE_URL` di `.env` (atau lewat `$env:TEST_DATABASE_URL` di PowerShell) dengan kredensial dan port yang sama seperti `DATABASE_URL`, lalu jalankan:
 
 ```powershell
-$env:TEST_DATABASE_URL = "postgres://platform:platform_dev_password@127.0.0.1:5432/platform_dev?sslmode=disable"
 go test ./... -run 'TestPostgres' -v
 ```
 

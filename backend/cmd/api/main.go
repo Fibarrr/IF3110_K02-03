@@ -12,12 +12,15 @@ import (
 
 	"github.com/Fibarrr/IF3110_K02-03/backend/internal/accesscontrol"
 	"github.com/Fibarrr/IF3110_K02-03/backend/internal/databasemanagement"
+	"github.com/Fibarrr/IF3110_K02-03/backend/internal/envfile"
 	"github.com/Fibarrr/IF3110_K02-03/backend/internal/migration"
 	"github.com/Fibarrr/IF3110_K02-03/backend/internal/web"
 	_ "github.com/lib/pq"
 )
 
 func main() {
+	envfile.Load(".env", "../.env", "../../.env")
+
 	port := os.Getenv("BACKEND_PORT")
 	if port == "" {
 		port = "8080"
