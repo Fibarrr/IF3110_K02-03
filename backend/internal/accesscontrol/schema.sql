@@ -10,8 +10,13 @@ CREATE TABLE IF NOT EXISTS ac_users (
 CREATE TABLE IF NOT EXISTS ac_groups (
     id BIGSERIAL PRIMARY KEY,
     name TEXT NOT NULL UNIQUE,
+    leader_user_id BIGINT REFERENCES ac_users(id) ON DELETE RESTRICT,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+-- CREATE TABLE IF NOT EXISTS does not update groups created by Milestone 1.
+ALTER TABLE ac_groups
+    ADD COLUMN IF NOT EXISTS leader_user_id BIGINT REFERENCES ac_users(id) ON DELETE RESTRICT;
 
 CREATE TABLE IF NOT EXISTS ac_group_members (
     group_id BIGINT NOT NULL REFERENCES ac_groups(id) ON DELETE CASCADE,

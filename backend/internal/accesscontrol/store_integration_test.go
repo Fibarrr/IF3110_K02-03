@@ -87,6 +87,37 @@ func TestPostgresAccessControlFlow(t *testing.T) {
 	if err := store.SetDatabaseAccess(ctx, viewGroup.ID, "db-1", AccessViewOnly); err != nil {
 		t.Fatal(err)
 	}
+	if err := store.SetGroupLeader(ctx, viewGroup.ID, user.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetGroupLeader(ctx, viewGroup.ID, admin.ID); err == nil {
+		t.Fatal("user yang bukan anggota grup tidak boleh menjadi leader")
+	}
+	approvers, err := store.ListDatabaseApprovers(ctx, "db-1")
+	if err != nil || len(approvers) != 1 {
+		t.Fatalf("approver view-only = %#v, err=%v", approvers, err)
+	}
+	if approvers[0].GroupID != viewGroup.ID || approvers[0].Access != AccessViewOnly || approvers[0].LeaderUserID == nil || *approvers[0].LeaderUserID != user.ID {
+		t.Fatalf("approver view-only tidak lengkap: %#v", approvers[0])
+	}
+	if err := store.RemoveMember(ctx, viewGroup.ID, user.ID); err == nil {
+		t.Fatal("leader tidak boleh dikeluarkan sebelum diganti")
+	}
+	if err := store.SetUserDisabled(ctx, user.ID, true); err == nil {
+		t.Fatal("leader tidak boleh dinonaktifkan sebelum diganti")
+	}
+	if err := store.AddMember(ctx, viewGroup.ID, admin.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetGroupLeader(ctx, viewGroup.ID, admin.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.AddMember(ctx, editGroup.ID, admin.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetGroupLeader(ctx, editGroup.ID, admin.ID); err != nil {
+		t.Fatal(err)
+	}
 	if got, err := store.EffectiveAccess(ctx, user.ID, "db-1"); err != nil || got != AccessViewOnly {
 		t.Fatalf("view access = %q, err=%v", got, err)
 	}
@@ -96,12 +127,22 @@ func TestPostgresAccessControlFlow(t *testing.T) {
 	if err := store.SetDatabaseAccess(ctx, editGroup.ID, "db-1", AccessViewEdit); err != nil {
 		t.Fatal(err)
 	}
+	if err := store.SetGroupLeader(ctx, editGroup.ID, user.ID); err != nil {
+		t.Fatal(err)
+	}
+	approvers, err = store.ListDatabaseApprovers(ctx, "db-1")
+	if err != nil || len(approvers) != 2 {
+		t.Fatalf("approver groups = %#v, err=%v", approvers, err)
+	}
+	if approvers[0].Access != AccessViewOnly || approvers[1].Access != AccessViewEdit {
+		t.Fatalf("approver groups harus mencakup view-only dan view-edit: %#v", approvers)
+	}
 	if got, err := store.EffectiveAccess(ctx, user.ID, "db-1"); err != nil || got != AccessViewEdit {
 		t.Fatalf("edit access should win, got %q err=%v", got, err)
 	}
 
 	policy := DefaultSessionPolicy()
-	policy.RotateEvery = -time.Second
+	policy.RotateEvery = -time.Hour
 	sessions := NewSessionManager(db, policy)
 	token, _, _, err := sessions.Create(ctx, user.ID)
 	if err != nil {
@@ -223,13 +264,16 @@ func TestPostgresAccessControlFlow(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.ExecContext(ctx, `UPDATE ac_sessions SET expires_at = NOW() - INTERVAL '1 second' WHERE token_hash = $1`, hashToken(absoluteToken)); err != nil {
+	if _, err := db.ExecContext(ctx, `UPDATE ac_sessions SET expires_at = NOW() - INTERVAL '1 hour' WHERE token_hash = $1`, hashToken(absoluteToken)); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := sessions.Load(ctx, absoluteToken); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("absolute-expired session should expire, got %v", err)
 	}
 
+	if err := store.SetGroupLeader(ctx, editGroup.ID, admin.ID); err != nil {
+		t.Fatal(err)
+	}
 	if err := store.SetUserDisabled(ctx, user.ID, true); err != nil {
 		t.Fatal(err)
 	}

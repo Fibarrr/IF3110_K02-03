@@ -34,9 +34,21 @@ type User struct {
 }
 
 type Group struct {
-	ID        int64     `json:"id"`
-	Name      string    `json:"name"`
-	CreatedAt time.Time `json:"createdAt"`
+	ID             int64     `json:"id"`
+	Name           string    `json:"name"`
+	LeaderUserID   *int64    `json:"leaderUserId"`
+	LeaderUsername string    `json:"leaderUsername,omitempty"`
+	CreatedAt      time.Time `json:"createdAt"`
+}
+
+// DatabaseApprover describes one group's approval responsibility for a database.
+// A nil LeaderUserID means the group needs an active member assigned as leader.
+type DatabaseApprover struct {
+	GroupID        int64          `json:"groupId"`
+	GroupName      string         `json:"groupName"`
+	LeaderUserID   *int64         `json:"leaderUserId"`
+	LeaderUsername string         `json:"leaderUsername,omitempty"`
+	Access         DatabaseAccess `json:"access"`
 }
 
 type DatabaseGrant struct {
@@ -164,6 +176,13 @@ func (s *Store) SetUserDisabled(ctx context.Context, userID int64, disabled bool
 				return InputError("Platform Admin terakhir tidak bisa dinonaktifkan")
 			}
 		}
+		var leadsGroup bool
+		if err := tx.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM ac_groups WHERE leader_user_id = $1)`, userID).Scan(&leadsGroup); err != nil {
+			return err
+		}
+		if leadsGroup {
+			return InputError("leader grup harus diganti sebelum akun dinonaktifkan")
+		}
 	}
 	result, err := tx.ExecContext(ctx, `UPDATE ac_users SET disabled = $2 WHERE id = $1`, userID, disabled)
 	if err != nil {
@@ -266,7 +285,12 @@ func (s *Store) CreateGroup(ctx context.Context, name string) (Group, error) {
 }
 
 func (s *Store) ListGroups(ctx context.Context) ([]Group, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id, name, created_at FROM ac_groups ORDER BY id`)
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT g.id, g.name, u.id, u.username, g.created_at
+		FROM ac_groups g
+		LEFT JOIN ac_users u ON u.id = g.leader_user_id AND NOT u.disabled
+			AND EXISTS (SELECT 1 FROM ac_group_members m WHERE m.group_id = g.id AND m.user_id = u.id)
+		ORDER BY g.id`)
 	if err != nil {
 		return nil, err
 	}
@@ -275,8 +299,14 @@ func (s *Store) ListGroups(ctx context.Context) ([]Group, error) {
 	groups := make([]Group, 0)
 	for rows.Next() {
 		var group Group
-		if err := rows.Scan(&group.ID, &group.Name, &group.CreatedAt); err != nil {
+		var leaderID sql.NullInt64
+		var leaderUsername sql.NullString
+		if err := rows.Scan(&group.ID, &group.Name, &leaderID, &leaderUsername, &group.CreatedAt); err != nil {
 			return nil, err
+		}
+		if leaderID.Valid {
+			group.LeaderUserID = &leaderID.Int64
+			group.LeaderUsername = leaderUsername.String
 		}
 		groups = append(groups, group)
 	}
@@ -380,6 +410,19 @@ func (s *Store) RemoveMember(ctx context.Context, groupID, userID int64) error {
 		return err
 	}
 	defer tx.Rollback()
+	if err := lockAdminChanges(ctx, tx); err != nil {
+		return err
+	}
+	var leaderID sql.NullInt64
+	if err := tx.QueryRowContext(ctx, `SELECT leader_user_id FROM ac_groups WHERE id = $1 FOR UPDATE`, groupID).Scan(&leaderID); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrNotFound
+		}
+		return err
+	}
+	if leaderID.Valid && leaderID.Int64 == userID {
+		return InputError("leader harus diganti sebelum dikeluarkan dari grup")
+	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM ac_group_members WHERE group_id = $1 AND user_id = $2`, groupID, userID); err != nil {
 		return err
 	}
@@ -387,6 +430,83 @@ func (s *Store) RemoveMember(ctx context.Context, groupID, userID int64) error {
 		return err
 	}
 	return tx.Commit()
+}
+
+// SetGroupLeader assigns an active group member as its single leader.
+func (s *Store) SetGroupLeader(ctx context.Context, groupID, userID int64) error {
+	if groupID < 1 || userID < 1 {
+		return InputError("ID grup dan user harus valid")
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if err := lockAdminChanges(ctx, tx); err != nil {
+		return err
+	}
+	var foundGroupID int64
+	if err := tx.QueryRowContext(ctx, `SELECT id FROM ac_groups WHERE id = $1 FOR UPDATE`, groupID).Scan(&foundGroupID); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrNotFound
+		}
+		return err
+	}
+	var member bool
+	if err := tx.QueryRowContext(ctx, `
+		SELECT EXISTS (
+			SELECT 1 FROM ac_group_members m
+			JOIN ac_users u ON u.id = m.user_id
+			WHERE m.group_id = $1 AND m.user_id = $2 AND NOT u.disabled
+		)`, groupID, userID).Scan(&member); err != nil {
+		return err
+	}
+	if !member {
+		return InputError("leader harus merupakan anggota aktif grup")
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE ac_groups SET leader_user_id = $2 WHERE id = $1`, groupID, userID); err != nil {
+		return mapDatabaseError(err)
+	}
+	return tx.Commit()
+}
+
+// ListDatabaseApprovers returns every group with access to databaseID,
+// including view-only grants. Groups without a valid leader have a nil LeaderUserID.
+func (s *Store) ListDatabaseApprovers(ctx context.Context, databaseID string) ([]DatabaseApprover, error) {
+	databaseID = strings.TrimSpace(databaseID)
+	if databaseID == "" || len(databaseID) > 200 {
+		return nil, InputError("databaseID harus berisi 1 sampai 200 karakter")
+	}
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT g.id, g.name, u.id, u.username, dbgrant.access_level
+		FROM ac_database_grants dbgrant
+		JOIN ac_groups g ON g.id = dbgrant.group_id
+	LEFT JOIN ac_users u ON u.id = g.leader_user_id AND NOT u.disabled
+			AND EXISTS (
+				SELECT 1 FROM ac_group_members m
+				WHERE m.group_id = g.id AND m.user_id = u.id
+			)
+		WHERE dbgrant.database_id = $1
+		ORDER BY g.id`, databaseID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	approvers := make([]DatabaseApprover, 0)
+	for rows.Next() {
+		var approver DatabaseApprover
+		var leaderID sql.NullInt64
+		var leaderUsername sql.NullString
+		if err := rows.Scan(&approver.GroupID, &approver.GroupName, &leaderID, &leaderUsername, &approver.Access); err != nil {
+			return nil, err
+		}
+		if leaderID.Valid {
+			approver.LeaderUserID = &leaderID.Int64
+			approver.LeaderUsername = leaderUsername.String
+		}
+		approvers = append(approvers, approver)
+	}
+	return approvers, rows.Err()
 }
 
 func (s *Store) SetDatabaseAccess(ctx context.Context, groupID int64, databaseID string, access DatabaseAccess) error {

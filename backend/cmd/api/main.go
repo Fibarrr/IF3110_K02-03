@@ -73,7 +73,7 @@ func main() {
 			err := acStore.BootstrapAdmin(ctx, adminUsername, adminPassword)
 			cancel()
 			if err != nil {
-				log.Fatal("gagal menyiapkan Platform Admin awal")
+				log.Fatalf("gagal menyiapkan Platform Admin awal: %v", err)
 			}
 		}
 
