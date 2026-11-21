@@ -62,34 +62,56 @@ The current Milestone 1 routes are draft/history CRUD plus synchronous execution
 
 Keep the existing routes for listing, viewing, creating, and editing drafts:
 
-- `GET /api/databases/{databaseID}/migrations`
+- `GET /api/databases/{databaseID}/approvers`
+- `GET /api/databases/{databaseID}/migrations?hideRollback=true|false`
 - `GET /api/databases/{databaseID}/migrations/{migrationID}`
 - `POST /api/databases/{databaseID}/migrations`
 - `PUT /api/databases/{databaseID}/migrations/{migrationID}`
 
-The Milestone 2 definition needs a name, `upSQL`, and either `downSQL` or an `irreversibleReason`. It also needs an execution mode (`standard` or `batch`) and batch settings for a batch migration. The exact batch payload should be agreed with the worker implementation; do not imply that arbitrary SQL can be automatically split into safe batches.
+The Milestone 2 definition accepts:
 
-Editing SQL creates/increments a revision. A review or execution must refer to the exact revision it uses. Editing a revision invalidates approvals for the earlier revision. Once a revision has executed, its SQL is immutable; corrections use a new migration.
+```json
+{
+  "name": "Backfill orders status",
+  "upSQL": "UPDATE public.orders SET status = 'v2' WHERE id > $1 AND id <= $2",
+  "downSQL": "UPDATE public.orders SET status = 'v1' WHERE id > $1 AND id <= $2",
+  "reversible": true,
+  "irreversibleReason": "",
+  "executionMode": "batch",
+  "batchConfig": {
+    "tableSchema": "public",
+    "tableName": "orders",
+    "keyColumn": "id",
+    "batchSize": 5000
+  }
+}
+```
+
+For `executionMode: "standard"`, `batchConfig` is omitted. When `reversible` is `false`, `irreversibleReason` is required and `downSQL` is empty. For `executionMode: "batch"`, `upSQL` (and `downSQL` when reversible) must scope each batch with keyset cursor parameters `$1` (exclusive lower bound `last_id`) and `$2` (inclusive upper bound `end_id`).
+
+Editing SQL creates/increments a revision. A review or execution must refer to the exact revision it uses. Editing a revision invalidates approvals for the earlier revision. Once a revision has been executed, its SQL is immutable; corrections use a new migration.
 
 ### Submit a change for review
 
-Proposed route:
+Implemented routes:
 
-`POST /api/databases/{databaseID}/migrations/{migrationID}/review-requests`
+- `POST /api/databases/{databaseID}/migrations/{migrationID}/review-requests`
+- `GET /api/databases/{databaseID}/review-requests`
+- `GET /api/databases/{databaseID}/review-requests/{requestID}`
 
-Example request for the first application:
+Example request:
 
 ```json
-{ "operation": "apply", "revision": 2 }
+{ "operation": "apply", "revision": 1, "comment": "Siap ditinjau" }
 ```
 
-`operation` is `apply`, `rollback`, or `forward`. Rollback/forward requests must identify the execution they target, for example with `targetExecutionId`. Every operation that changes the database needs its own review request and approval set.
+`operation` is `apply`, `rollback`, `forward`, `resume`, or `cancel_batch`. Rollback requests reference `targetExecutionId` (optional if targeting the active execution); `resume` and `cancel_batch` reference `targetJobId` (optional if targeting the latest partial job). Every operation that changes the database needs its own review request and approval set.
 
-Response: `201 Created` with a request ID, operation, referenced revision/execution, status (`pending_review`), and the required groups/approval decisions. The server derives required groups from `ListDatabaseApprovers`; the client must not choose the approver set.
+Response: `201 Created` with request ID, operation, referenced revision/execution/job, status (`pending_review`), and the required groups/approval decisions derived server-side from `ListDatabaseApprovers`.
 
 ### Approve or reject
 
-Proposed route:
+Implemented route:
 
 `PUT /api/databases/{databaseID}/review-requests/{requestID}/approvals/{groupID}`
 
@@ -99,27 +121,27 @@ Request:
 { "decision": "approve", "comment": "Sudah direview" }
 ```
 
-Only the active leader of that required group may decide. The server also verifies current database access, session, and CSRF. A decision for a group that does not have access to this database is rejected. Store an audit event when a decision changes; do not erase prior decisions from the audit record.
-
-The request is `approved` only when every required group has approved it. Any rejection prevents queueing. The response includes the latest decision per group and the request's current status.
+Only the active leader of that required group may decide (including leaders of `view_only` groups). The server verifies current database access, session, CSRF, and live approver snapshot consistency. Every decision is appended to `mg_review_audit_events`.
 
 ### Queue and monitor execution
 
-Proposed routes:
+Implemented routes:
 
-- `POST /api/databases/{databaseID}/review-requests/{requestID}/queue`
+- `POST /api/databases/{databaseID}/review-requests/{requestID}/queue` (`202 Accepted`)
+- `GET /api/databases/{databaseID}/jobs`
 - `GET /api/databases/{databaseID}/jobs/{jobID}`
-- `POST /api/databases/{databaseID}/jobs/{jobID}/resume`
+- `POST /api/databases/{databaseID}/jobs/{jobID}/resume` (`202 Accepted`, requires approved `resume` review request)
+- `POST /api/databases/{databaseID}/jobs/{jobID}/resolve-uncertain` (resolves an `uncertain` job after operator DB verification)
 
-Queueing is allowed only after approval and server-side revalidation. Return `202 Accepted` with a job ID immediately; the API must not wait for SQL execution. Job status should expose at least `queued`, `running`, `succeeded`, `failed`, and partial/partially-reverted states when batching applies. Include committed batch/row counts when available and a safe, useful error summary on failure.
-
-The worker must revalidate the referenced revision, approval quorum, caller authorization, and migration order before execution. If the approver set or its leader changes after review, invalidate the old approval set and require a new review. Jobs/checkpoints must survive process restart; duplicate queue delivery must not double-commit a batch.
+Queueing is allowed only after approval and server-side revalidation. Returns `202 Accepted` with the job immediately without waiting for SQL execution. Job statuses include `queued`, `running`, `succeeded`, `failed`, `partial`, `partially_reverted`, and `uncertain`, with `committedBatches`, `committedRows`, `lastCursor`, `maxCursor`, and a safe `errorSummary`.
 
 ### Migration history
 
 `GET /api/databases/{databaseID}/migrations?hideRollback=true|false`
 
-The filter only changes the response; it must not delete or rewrite history. Keep execution IDs so a rollback identifies the execution it reverses. Failed attempts remain visible in application logs/audit records; successful committed changes remain in migration history. If the team interprets the PDF's history wording differently, resolve it against the latest PDF/Q&A and update this contract before implementing the response.
+Returns `{ "migrations": [...], "history": [...], "hideRollback": false }`.
+
+Per Milestone 2 Specification v4 (revised 16 Nov 2026), **all executed attempts (both succeeded and failed)** are persisted append-only in `mg_executions` with `executionId`, `migrationId`, `revision`, `operation`, `targetExecutionId`, `executedBy`, `sqlExecuted`, `status`, timestamps, and batch progress counters. When `hideRollback=true`, the API hides only `(cancelled execution, successful rollback/cancel_batch)` pairs matched by `executionId`; later `forward` executions and failed attempts remain visible, and no history or audit records are deleted.
 
 ## Required behavior to preserve across modules
 

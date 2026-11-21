@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
@@ -52,6 +53,9 @@ func main() {
 	})
 	var adminPageAuth web.AdminPageAuth
 
+	appCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
 	databaseURL := strings.TrimSpace(os.Getenv("DATABASE_URL"))
 	if databaseURL != "" {
 		db, err := sql.Open("postgres", databaseURL)
@@ -61,7 +65,7 @@ func main() {
 		}
 		defer db.Close()
 
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		ctx, cancel := context.WithTimeout(appCtx, 10*time.Second)
 		if err := db.PingContext(ctx); err != nil {
 			cancel()
 			slog.Error("PostgreSQL tidak bisa dihubungi")
@@ -79,13 +83,26 @@ func main() {
 			slog.Error("gagal menyiapkan tabel Database Management", slog.String("error", telemetry.RedactString(err.Error())))
 			os.Exit(1)
 		}
-		migrationStore := migration.NewStore(db, dmStore)
+		migrationStore := migration.NewStore(db, dmStore, acStore)
 		if err := migrationStore.Migrate(ctx); err != nil {
 			cancel()
 			slog.Error("gagal menyiapkan tabel Migration", slog.String("error", telemetry.RedactString(err.Error())))
 			os.Exit(1)
 		}
 		cancel()
+
+		// Embedded worker runs by default for easy local setup; set EMBEDDED_WORKER=false when running standalone cmd/worker.
+		if !strings.EqualFold(strings.TrimSpace(os.Getenv("EMBEDDED_WORKER")), "false") {
+			host, _ := os.Hostname()
+			workerID := fmt.Sprintf("api-worker-%s-%s", host, telemetry.NewCorrelationID()[:8])
+			worker := migration.NewWorker(migrationStore, migration.WorkerConfig{
+				WorkerID:     workerID,
+				Concurrency:  2,
+				PollInterval: 400 * time.Millisecond,
+				LockLeaseTTL: 30 * time.Second,
+			})
+			go worker.Run(appCtx)
+		}
 
 		adminUsername := os.Getenv("PLATFORM_ADMIN_USERNAME")
 		adminPassword := os.Getenv("PLATFORM_ADMIN_PASSWORD")
@@ -129,11 +146,8 @@ func main() {
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
-
 	go func() {
-		<-ctx.Done()
+		<-appCtx.Done()
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		_ = server.Shutdown(shutdownCtx)
