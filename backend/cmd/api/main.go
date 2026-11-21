@@ -51,7 +51,6 @@ func main() {
 		w.WriteHeader(http.StatusServiceUnavailable)
 		_ = json.NewEncoder(w).Encode(map[string]string{"error": "database platform belum dikonfigurasi"})
 	})
-	var adminPageAuth web.AdminPageAuth
 
 	appCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -122,7 +121,6 @@ func main() {
 
 		sessions := accesscontrol.NewSessionManager(db, accesscontrol.DefaultSessionPolicy())
 		acHandler := accesscontrol.NewHTTPHandler(acStore, sessions, strings.EqualFold(os.Getenv("COOKIE_SECURE"), "true"))
-		adminPageAuth = acHandler
 		dmViewer := databasemanagement.NewViewer(dmStore)
 		dmHandler := databasemanagement.NewHTTPHandler(dmStore, dmViewer, acHandler, acStore)
 		migrationHandler := migration.NewHTTPHandler(migrationStore, acHandler)
@@ -134,7 +132,7 @@ func main() {
 		apiHandler = apiMux
 	}
 
-	mux, err := buildServerMux(apiHandler, adminPageAuth)
+	mux, err := buildServerMux(apiHandler)
 	if err != nil {
 		slog.Error("gagal menyiapkan router web", slog.String("error", err.Error()))
 		os.Exit(1)
@@ -160,7 +158,7 @@ func main() {
 	}
 }
 
-func buildServerMux(apiHandler http.Handler, adminAuth ...web.AdminPageAuth) (*http.ServeMux, error) {
+func buildServerMux(apiHandler http.Handler) (*http.ServeMux, error) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -169,10 +167,10 @@ func buildServerMux(apiHandler http.Handler, adminAuth ...web.AdminPageAuth) (*h
 	})
 	mux.Handle("/api/", apiHandler)
 
-	webHandler, err := web.NewHandler(adminAuth...)
+	webHandler, err := web.NewHandler()
 	if err != nil {
 		return nil, err
 	}
-	webHandler.RegisterRoutes(mux, nil, adminAuth...)
+	webHandler.RegisterRoutes(mux, nil)
 	return mux, nil
 }

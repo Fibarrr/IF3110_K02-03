@@ -5,6 +5,7 @@
 *.test
 *.out
 /backend/bin/
+node_modules/
 npm-debug.log*
 .vscode/
 .idea/
