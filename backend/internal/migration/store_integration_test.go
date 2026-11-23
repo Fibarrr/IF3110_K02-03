@@ -106,6 +106,17 @@ func setupPostgresMigrationHarness(t *testing.T) *pgTestHarness {
 	if err := mgStore.Migrate(ctx); err != nil {
 		t.Fatal(err)
 	}
+	// Platform tables use a fresh schema per harness, while the target database is shared.
+	// Give each harness a unique job ID range so stale target-side checkpoints from a previous
+	// run cannot be mistaken for checkpoints belonging to this harness.
+	suffixValue, err := strconv.ParseInt(suffix, 16, 64)
+	if err != nil {
+		t.Fatal(err)
+	}
+	jobIDSeed := (int64(1) << 50) + suffixValue
+	if _, err := db.ExecContext(ctx, `SELECT setval(pg_get_serial_sequence('mg_jobs', 'id')::regclass, $1, false)`, jobIDSeed); err != nil {
+		t.Fatal(err)
+	}
 
 	dbID := "mg2-db-" + suffix
 	_, err = dmStore.CreateConnection(ctx, databasemanagement.ConnectionInput{
@@ -450,7 +461,7 @@ func TestPostgresMigrationBatchPartialResumeCancelAndLeaderInvalidation(t *testi
 	// Checkpoints query on cancelJob must return the shared root lineage checkpoints.
 	cps, err := h.mgStore.ListJobCheckpoints(h.ctx, cancelJob.ID)
 	if err != nil || len(cps) < 2 {
-		t.Fatalf("expected up+down checkpoints for cancelJob, got len=%d err=%v", len(cps), err)
+		t.Fatalf("expected up+down checkpoints for cancelJob, got checkpoints=%+v err=%v", cps, err)
 	}
 }
 
