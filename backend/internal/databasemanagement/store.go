@@ -12,7 +12,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Fibarrr/IF3110_K02-03/backend/internal/telemetry"
 	"github.com/lib/pq"
+	"go.opentelemetry.io/otel/attribute"
 )
 
 //go:embed schema.sql
@@ -91,15 +93,26 @@ func (s *Store) CreateConnection(ctx context.Context, input ConnectionInput) (Da
 	if err != nil {
 		return DatabaseConnection{}, err
 	}
-	var conn DatabaseConnection
-	err = s.db.QueryRowContext(ctx, `
+	ctx = telemetry.WithDatabaseID(ctx, normalized.ID)
+	ctx, span := telemetry.StartSpan(ctx, "db.management.create_connection")
+	defer span.End()
+
+	const query = `
 		INSERT INTO dm_databases (id, name, host, port, database_name, username, password, ssl_mode, description)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-		RETURNING id, name, host, port, database_name, username, (password <> ''), ssl_mode, description, created_at, updated_at`,
-		normalized.ID, normalized.Name, normalized.Host, normalized.Port, normalized.DatabaseName,
-		normalized.Username, normalized.Password, normalized.SSLMode, normalized.Description,
-	).Scan(&conn.ID, &conn.Name, &conn.Host, &conn.Port, &conn.DatabaseName, &conn.Username,
-		&conn.HasPassword, &conn.SSLMode, &conn.Description, &conn.CreatedAt, &conn.UpdatedAt)
+		RETURNING id, name, host, port, database_name, username, (password <> ''), ssl_mode, description, created_at, updated_at`
+	var conn DatabaseConnection
+	err = telemetry.ObserveSQL(ctx, normalized.ID, query, []any{normalized.ID, normalized.Host, normalized.Port, normalized.DatabaseName}, func() (int64, error) {
+		scanErr := s.db.QueryRowContext(ctx, query,
+			normalized.ID, normalized.Name, normalized.Host, normalized.Port, normalized.DatabaseName,
+			normalized.Username, normalized.Password, normalized.SSLMode, normalized.Description,
+		).Scan(&conn.ID, &conn.Name, &conn.Host, &conn.Port, &conn.DatabaseName, &conn.Username,
+			&conn.HasPassword, &conn.SSLMode, &conn.Description, &conn.CreatedAt, &conn.UpdatedAt)
+		if scanErr != nil {
+			return 0, scanErr
+		}
+		return 1, nil
+	})
 	if err != nil {
 		return DatabaseConnection{}, mapDatabaseError(err)
 	}
@@ -116,24 +129,29 @@ func (s *Store) UpdateConnection(ctx context.Context, databaseID string, input C
 	if err != nil {
 		return DatabaseConnection{}, err
 	}
-	var conn DatabaseConnection
-	err = s.db.QueryRowContext(ctx, `
+	ctx = telemetry.WithDatabaseID(ctx, databaseID)
+	ctx, span := telemetry.StartSpan(ctx, "db.management.update_connection")
+	defer span.End()
+
+	const query = `
 		UPDATE dm_databases
-		SET name = $2,
-		    host = $3,
-		    port = $4,
-		    database_name = $5,
-		    username = $6,
+		SET name = $2, host = $3, port = $4, database_name = $5, username = $6,
 		    password = CASE WHEN $7 = '' THEN password ELSE $7 END,
-		    ssl_mode = $8,
-		    description = $9,
-		    updated_at = NOW()
+		    ssl_mode = $8, description = $9, updated_at = NOW()
 		WHERE id = $1
-		RETURNING id, name, host, port, database_name, username, (password <> ''), ssl_mode, description, created_at, updated_at`,
-		databaseID, normalized.Name, normalized.Host, normalized.Port, normalized.DatabaseName,
-		normalized.Username, normalized.Password, normalized.SSLMode, normalized.Description,
-	).Scan(&conn.ID, &conn.Name, &conn.Host, &conn.Port, &conn.DatabaseName, &conn.Username,
-		&conn.HasPassword, &conn.SSLMode, &conn.Description, &conn.CreatedAt, &conn.UpdatedAt)
+		RETURNING id, name, host, port, database_name, username, (password <> ''), ssl_mode, description, created_at, updated_at`
+	var conn DatabaseConnection
+	err = telemetry.ObserveSQL(ctx, databaseID, query, []any{databaseID, normalized.Host, normalized.Port, normalized.DatabaseName}, func() (int64, error) {
+		scanErr := s.db.QueryRowContext(ctx, query,
+			databaseID, normalized.Name, normalized.Host, normalized.Port, normalized.DatabaseName,
+			normalized.Username, normalized.Password, normalized.SSLMode, normalized.Description,
+		).Scan(&conn.ID, &conn.Name, &conn.Host, &conn.Port, &conn.DatabaseName, &conn.Username,
+			&conn.HasPassword, &conn.SSLMode, &conn.Description, &conn.CreatedAt, &conn.UpdatedAt)
+		if scanErr != nil {
+			return 0, scanErr
+		}
+		return 1, nil
+	})
 	if errors.Is(err, sql.ErrNoRows) {
 		return DatabaseConnection{}, ErrNotFound
 	}
@@ -149,39 +167,76 @@ func (s *Store) DeleteConnection(ctx context.Context, databaseID string) error {
 	if databaseID == "" {
 		return ErrNotFound
 	}
+	ctx = telemetry.WithDatabaseID(ctx, databaseID)
+	ctx, span := telemetry.StartSpan(ctx, "db.management.delete_connection")
+	defer span.End()
+
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
+		telemetry.RecordSpanError(span, err)
 		return err
 	}
-	defer tx.Rollback()
+	committed := false
+	defer func() {
+		if !committed {
+			rbErr := tx.Rollback()
+			if errors.Is(rbErr, sql.ErrTxDone) {
+				rbErr = nil
+			}
+			telemetry.LogSQLRollback(ctx, databaseID, "delete_connection_aborted", rbErr)
+		}
+	}()
 
-	result, err := tx.ExecContext(ctx, `DELETE FROM dm_databases WHERE id = $1`, databaseID)
-	if err != nil {
+	var deletedCount int64
+	if err := telemetry.ObserveSQL(ctx, databaseID, `DELETE FROM dm_databases WHERE id = $1`, []any{databaseID}, func() (int64, error) {
+		res, execErr := tx.ExecContext(ctx, `DELETE FROM dm_databases WHERE id = $1`, databaseID)
+		if execErr != nil {
+			return 0, execErr
+		}
+		deletedCount, execErr = res.RowsAffected()
+		return deletedCount, execErr
+	}); err != nil {
 		return err
 	}
-	count, err := result.RowsAffected()
-	if err != nil {
-		return err
-	}
-	if count == 0 {
+	if deletedCount == 0 {
 		return ErrNotFound
 	}
 
-	if _, err := tx.ExecContext(ctx, `
-		UPDATE ac_sessions
-		SET rotated_at = TO_TIMESTAMP(0)
+	const rotateQuery = `
+		UPDATE ac_sessions SET rotated_at = TO_TIMESTAMP(0)
 		WHERE user_id IN (
-		    SELECT m.user_id
-		    FROM ac_group_members m
+		    SELECT m.user_id FROM ac_group_members m
 		    JOIN ac_database_grants g ON g.group_id = m.group_id
 		    WHERE g.database_id = $1
-		)`, databaseID); err != nil {
+		)`
+	if err := telemetry.ObserveSQL(ctx, databaseID, rotateQuery, []any{databaseID}, func() (int64, error) {
+		res, execErr := tx.ExecContext(ctx, rotateQuery, databaseID)
+		if execErr != nil {
+			return 0, execErr
+		}
+		return res.RowsAffected()
+	}); err != nil {
 		return err
 	}
-	if _, err := tx.ExecContext(ctx, `DELETE FROM ac_database_grants WHERE database_id = $1`, databaseID); err != nil {
+	if err := telemetry.ObserveSQL(ctx, databaseID, `DELETE FROM ac_database_grants WHERE database_id = $1`, []any{databaseID}, func() (int64, error) {
+		res, execErr := tx.ExecContext(ctx, `DELETE FROM ac_database_grants WHERE database_id = $1`, databaseID)
+		if execErr != nil {
+			return 0, execErr
+		}
+		return res.RowsAffected()
+	}); err != nil {
 		return err
 	}
-	return tx.Commit()
+
+	commitStart := time.Now()
+	err = tx.Commit()
+	telemetry.LogSQLCommit(ctx, databaseID, time.Since(commitStart), err)
+	if err != nil {
+		telemetry.RecordSpanError(span, err)
+		return err
+	}
+	committed = true
+	return nil
 }
 
 func (s *Store) GetConnection(ctx context.Context, databaseID string) (DatabaseConnection, error) {
@@ -217,23 +272,38 @@ func (s *Store) ListConnections(ctx context.Context) ([]DatabaseConnection, erro
 // OpenTargetDB membuka koneksi *sql.DB ke database PostgreSQL target yang terdaftar.
 // Caller wajib menutup *sql.DB yang dikembalikan setelah selesai dipakai.
 func (s *Store) OpenTargetDB(ctx context.Context, databaseID string) (*sql.DB, DatabaseConnection, error) {
+	ctx = telemetry.WithDatabaseID(ctx, databaseID)
+	ctx, span := telemetry.StartSpan(ctx, "db.management.open_target_db")
+	defer span.End()
+
 	stored, err := s.getStoredConnection(ctx, databaseID)
 	if err != nil {
+		telemetry.RecordSpanError(span, err)
 		return nil, DatabaseConnection{}, err
 	}
+	span.SetAttributes(
+		attribute.String("db.host", stored.Host),
+		attribute.Int("db.port", stored.Port),
+		attribute.String("db.name", stored.DatabaseName),
+		attribute.String("db.ssl_mode", stored.SSLMode),
+	)
 	targetDB, err := sql.Open("postgres", buildPostgresDSN(stored))
 	if err != nil {
-		return nil, stored.DatabaseConnection, TargetConnectionError{Message: sanitizeConnectionError(err, stored.Password)}
+		safeErr := TargetConnectionError{Message: sanitizeConnectionError(err, stored.Password)}
+		telemetry.RecordSpanError(span, safeErr)
+		return nil, stored.DatabaseConnection, safeErr
 	}
-	targetDB.SetMaxOpenConns(2)
-	targetDB.SetMaxIdleConns(1)
+	targetDB.SetMaxOpenConns(4)
+	targetDB.SetMaxIdleConns(2)
 	targetDB.SetConnMaxLifetime(2 * time.Minute)
 
 	pingCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 	if err := targetDB.PingContext(pingCtx); err != nil {
 		_ = targetDB.Close()
-		return nil, stored.DatabaseConnection, TargetConnectionError{Message: sanitizeConnectionError(err, stored.Password)}
+		safeErr := TargetConnectionError{Message: sanitizeConnectionError(err, stored.Password)}
+		telemetry.RecordSpanError(span, safeErr)
+		return nil, stored.DatabaseConnection, safeErr
 	}
 	return targetDB, stored.DatabaseConnection, nil
 }

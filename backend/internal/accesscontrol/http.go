@@ -53,6 +53,7 @@ func NewHTTPHandler(store *Store, sessions *SessionManager, cookieSecure bool) *
 	mux.Handle("DELETE /api/admin/groups/{groupID}", admin(http.HandlerFunc(h.deleteGroup)))
 	mux.Handle("GET /api/admin/groups/{groupID}/members", h.requireUser(h.requirePlatformAdmin(http.HandlerFunc(h.listMembers))))
 	mux.Handle("GET /api/admin/groups/{groupID}/databases", h.requireUser(h.requirePlatformAdmin(http.HandlerFunc(h.listDatabaseGrants))))
+	mux.Handle("PUT /api/admin/groups/{groupID}/leader", admin(http.HandlerFunc(h.setGroupLeader)))
 	mux.Handle("PUT /api/admin/groups/{groupID}/members/{userID}", admin(http.HandlerFunc(h.addMember)))
 	mux.Handle("DELETE /api/admin/groups/{groupID}/members/{userID}", admin(http.HandlerFunc(h.removeMember)))
 	mux.Handle("PUT /api/admin/groups/{groupID}/databases/{databaseID}/access", admin(http.HandlerFunc(h.setDatabaseAccess)))
@@ -272,6 +273,24 @@ func (h *HTTPHandler) listDatabaseGrants(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"databases": grants})
+}
+
+func (h *HTTPHandler) setGroupLeader(w http.ResponseWriter, r *http.Request) {
+	groupID, ok := pathID(w, r, "groupID")
+	if !ok {
+		return
+	}
+	var input struct {
+		UserID int64 `json:"userId"`
+	}
+	if !decodeJSON(w, r, &input) {
+		return
+	}
+	if err := h.store.SetGroupLeader(r.Context(), groupID, input.UserID); err != nil {
+		writeStoreError(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (h *HTTPHandler) createGroup(w http.ResponseWriter, r *http.Request) {

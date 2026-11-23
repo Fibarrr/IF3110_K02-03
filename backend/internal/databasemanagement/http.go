@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/Fibarrr/IF3110_K02-03/backend/internal/accesscontrol"
+	"github.com/Fibarrr/IF3110_K02-03/backend/internal/telemetry"
 )
 
 type AuthGuard interface {
@@ -50,17 +51,33 @@ func NewHTTPHandler(store *Store, viewer *Viewer, auth AuthGuard, access AccessR
 
 // RegisterRoutes mendaftarkan seluruh endpoint Database Management ke ServeMux yang diberikan.
 func (h *HTTPHandler) RegisterRoutes(mux *http.ServeMux) {
+	withTelemetry := func(handler http.HandlerFunc) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			ctx := r.Context()
+			if user, ok := accesscontrol.UserFromContext(ctx); ok {
+				ctx = telemetry.WithActor(ctx, telemetry.Actor{
+					UserID:        user.ID,
+					Username:      user.Username,
+					PlatformAdmin: user.PlatformAdmin,
+				})
+			}
+			if dbID := strings.ToLower(strings.TrimSpace(r.PathValue("databaseID"))); dbID != "" {
+				ctx = telemetry.WithDatabaseID(ctx, dbID)
+			}
+			handler(w, r.WithContext(ctx))
+		})
+	}
 	adminRead := func(handler http.HandlerFunc) http.Handler {
-		return h.auth.RequireUser(h.auth.RequirePlatformAdmin(handler))
+		return h.auth.RequireUser(h.auth.RequirePlatformAdmin(withTelemetry(handler)))
 	}
 	adminMutate := func(handler http.HandlerFunc) http.Handler {
-		return h.auth.RequireUser(h.auth.RequirePlatformAdmin(h.auth.RequireCSRF(handler)))
+		return h.auth.RequireUser(h.auth.RequirePlatformAdmin(h.auth.RequireCSRF(withTelemetry(handler))))
 	}
 	dbIDFromPath := func(r *http.Request) string {
 		return strings.ToLower(strings.TrimSpace(r.PathValue("databaseID")))
 	}
 	dbView := func(handler http.HandlerFunc) http.Handler {
-		return h.auth.RequireDatabaseAccess(dbIDFromPath, accesscontrol.AccessViewOnly, handler)
+		return h.auth.RequireDatabaseAccess(dbIDFromPath, accesscontrol.AccessViewOnly, withTelemetry(handler))
 	}
 
 	mux.Handle("GET /api/admin/databases", adminRead(h.listAdminDatabases))
@@ -70,7 +87,7 @@ func (h *HTTPHandler) RegisterRoutes(mux *http.ServeMux) {
 	mux.Handle("DELETE /api/admin/databases/{databaseID}", adminMutate(h.deleteDatabase))
 	mux.Handle("POST /api/admin/databases/{databaseID}/test", adminMutate(h.testDatabaseConnection))
 
-	mux.Handle("GET /api/databases", h.auth.RequireUser(http.HandlerFunc(h.listAccessibleDatabases)))
+	mux.Handle("GET /api/databases", h.auth.RequireUser(withTelemetry(h.listAccessibleDatabases)))
 	mux.Handle("GET /api/databases/{databaseID}", dbView(h.getDatabaseSummary))
 	mux.Handle("GET /api/databases/{databaseID}/schemas", dbView(h.listSchemas))
 	mux.Handle("GET /api/databases/{databaseID}/schemas/{schemaName}/tables/{tableName}", dbView(h.getTableDetails))
@@ -178,7 +195,7 @@ func (h *HTTPHandler) getDatabaseSummary(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	status, err := h.viewer.PingConnection(r.Context(), dbID)
-	if err != nil {
+	if err != nil && !errors.Is(err, ErrTargetConnection) {
 		writeStoreError(w, err)
 		return
 	}
